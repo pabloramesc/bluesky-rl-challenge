@@ -5,19 +5,22 @@ Put reusable code in `bluesky_pabloramesc/` and experiment entry points in
 
 | Module | Purpose |
 | --- | --- |
-| `models.py` | PPO/SAC MLP architectures and hyperparameters |
+| `models.py` | PPO/SAC/TD3/DDPG MLP architectures and hyperparameters |
 | `single_agent.py` | Single-aircraft Gymnasium environment |
 | `multi_agent.py` | PettingZoo wrappers and vector environment |
 | `training.py` | Training, checkpoints, evaluation, and replay |
+| `reporting.py` | Run metadata, raw episode histories, and performance plots |
 | `cli.py` | Shared command-line options |
 
 Add your own modules alongside these as needed. For example, after creating
 `agents.py`, import it with `from bluesky_pabloramesc.agents import MyAgent`.
 
-Install the package and development tools from the repository root:
+Create `.venv` using the [setup guide](../README.md#setup), then install the
+package and development tools from the repository root:
 
 ```bash
-python -m pip install -e ./vendor/bluesky-gym -e ".[dev]"
+source .venv/bin/activate
+uv pip install -e ./vendor/bluesky-gym -e ".[dev]"
 python -m pytest
 ```
 

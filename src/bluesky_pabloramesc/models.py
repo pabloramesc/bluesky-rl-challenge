@@ -1,13 +1,25 @@
 """MLP baselines: edit these builders to customize networks and learning settings."""
 
+import numpy as np
 import torch
-from stable_baselines3 import PPO, SAC
+from stable_baselines3 import DDPG, PPO, SAC, TD3
+from stable_baselines3.common.noise import NormalActionNoise
 
 GAMMA = 0.995
 
 
 def build_ppo(env, seed=0, device="auto", **overrides):
-    """Independent 256x256 tanh MLPs for the actor and value function."""
+    """Build PPO with separate 256x256 tanh actor and value networks.
+
+    Args:
+        env: Continuous-action environment used for training.
+        seed: Random seed for initialization and training.
+        device: PyTorch device name, or "auto".
+        **overrides: SB3 constructor settings that replace the defaults.
+
+    Returns:
+        Configured SB3 PPO model.
+    """
     settings = {
         "learning_rate": 3e-4,
         "n_steps": 2048,
@@ -30,7 +42,17 @@ def build_ppo(env, seed=0, device="auto", **overrides):
 
 
 def build_sac(env, seed=0, device="auto", **overrides):
-    """256x256 ReLU MLP actor and twin Q critics for continuous actions."""
+    """Build SAC with a 256x256 ReLU actor and twin Q critics.
+
+    Args:
+        env: Continuous-action environment used for training.
+        seed: Random seed for initialization and training.
+        device: PyTorch device name, or "auto".
+        **overrides: SB3 constructor settings that replace the defaults.
+
+    Returns:
+        Configured SB3 SAC model.
+    """
     settings = {
         "learning_rate": 3e-4,
         "buffer_size": 100_000,
@@ -54,8 +76,86 @@ def build_sac(env, seed=0, device="auto", **overrides):
     return SAC("MlpPolicy", env, **settings)
 
 
+def _build_deterministic(model_type, env, seed, device, overrides):
+    """Build a deterministic actor-critic with shared baseline settings.
+
+    Args:
+        model_type: SB3 TD3 or DDPG class.
+        env: Continuous-action environment used for training.
+        seed: Random seed for initialization and training.
+        device: PyTorch device name, or "auto".
+        overrides: SB3 constructor settings that replace the defaults.
+
+    Returns:
+        Configured model with Gaussian action noise.
+    """
+    action_shape = env.action_space.shape
+    settings = {
+        "learning_rate": 3e-4,
+        "buffer_size": 100_000,
+        "learning_starts": 10_000,
+        "batch_size": 256,
+        "tau": 0.005,
+        "gamma": GAMMA,
+        "train_freq": 1,
+        "gradient_steps": 1,
+        # SB3 adds this noise in normalized [-1, 1] action coordinates.
+        "action_noise": NormalActionNoise(
+            mean=np.zeros(action_shape), sigma=0.1 * np.ones(action_shape)
+        ),
+        "policy_kwargs": {
+            "net_arch": {"pi": [256, 256], "qf": [256, 256]},
+            "activation_fn": torch.nn.ReLU,
+        },
+        "seed": seed,
+        "device": device,
+        "verbose": 1,
+    }
+    settings.update(overrides)
+    return model_type("MlpPolicy", env, **settings)
+
+
+def build_td3(env, seed=0, device="auto", **overrides):
+    """Build TD3 with 256x256 ReLU networks and Gaussian exploration.
+
+    Args:
+        env: Continuous-action environment used for training.
+        seed: Random seed for initialization and training.
+        device: PyTorch device name, or "auto".
+        **overrides: SB3 constructor settings that replace the defaults.
+
+    Returns:
+        Configured SB3 TD3 model with twin critics and delayed actor updates.
+    """
+    return _build_deterministic(TD3, env, seed, device, overrides)
+
+
+def build_ddpg(env, seed=0, device="auto", **overrides):
+    """Build DDPG with 256x256 ReLU networks and Gaussian exploration.
+
+    Args:
+        env: Continuous-action environment used for training.
+        seed: Random seed for initialization and training.
+        device: PyTorch device name, or "auto".
+        **overrides: SB3 constructor settings that replace the defaults.
+
+    Returns:
+        Configured SB3 DDPG model with one critic.
+    """
+    return _build_deterministic(DDPG, env, seed, device, overrides)
+
+
 def build_multi_ppo(venv, seed=0, device="auto"):
-    """Construct PPO for ten-agent parameter-sharing training."""
+    """Build PPO for ten-agent parameter sharing.
+
+    Args:
+        venv: Vector environment with one slot per aircraft.
+        seed: Random seed for initialization and training.
+        device: PyTorch device name, or "auto".
+
+    Returns:
+        Configured SB3 PPO model shared across agent slots.
+    """
     return PPO(
         "MlpPolicy",
         venv,
@@ -92,7 +192,16 @@ def build_multi_ppo(venv, seed=0, device="auto"):
 
 
 def build_multi_sac(venv, seed=0, device="auto"):
-    """Construct SAC for ten-agent parameter-sharing training."""
+    """Build SAC for ten-agent parameter sharing.
+
+    Args:
+        venv: Vector environment with one slot per aircraft.
+        seed: Random seed for initialization and training.
+        device: PyTorch device name, or "auto".
+
+    Returns:
+        Configured SB3 SAC model shared across agent slots.
+    """
     return SAC(
         "MlpPolicy",
         venv,

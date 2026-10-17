@@ -6,7 +6,16 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 
 def make_env(render_mode=None):
-    """Flatten observations for an MLP; use one BlueSky instance per process."""
+    """Create a monitored single-aircraft environment with flat observations.
+
+    Create only one BlueSky environment per process; simulator state is global.
+
+    Args:
+        render_mode: Rendering mode, or None for headless operation.
+
+    Returns:
+        DummyVecEnv containing one monitored CompetitionEnv.
+    """
     from bluesky_gym.envs.competition_env import CompetitionEnv
 
     return DummyVecEnv(

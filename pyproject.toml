@@ -3,7 +3,7 @@ name = "bluesky-pabloramesc"
 version = "0.1.0"
 description = "Personal agents and experiments for TU Delft BlueSky-Gym"
 requires-python = ">=3.10"
-dependencies = ["bluesky-gym"]
+dependencies = ["bluesky-gym", "tqdm", "rich"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff"]

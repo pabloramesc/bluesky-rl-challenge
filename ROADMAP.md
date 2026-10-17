@@ -6,7 +6,7 @@ Progress from reproducible baselines to advanced, safety-aware multi-agent contr
 
 - [x] Single-agent PPO + MLP — [builder](src/bluesky_pabloramesc/models.py), [training/checkpoint tests](tests/test_training.py)
 - [x] Single-agent SAC + MLP — same builder/test modules
-- [ ] TD3 / DDPG (optional)
+- [x] Single-agent TD3 / DDPG + MLP — same builder/test modules
 - [ ] Hyperparameter optimization (Optuna)
 
 ## 2. Actions and observations

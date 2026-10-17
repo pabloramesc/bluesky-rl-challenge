@@ -21,18 +21,39 @@ training scripts in `experiments/`.
 
 ## Setup
 
-Clone your repository with its dependency:
+Use uv to create the environment and install both packages. Run these commands
+from a shell where `uv` is available:
 
 ```bash
 git clone --recurse-submodules https://github.com/pabloramesc/bluesky-rl-challenge.git bluesky-pabloramesc
 cd bluesky-pabloramesc
-python -m venv .venv
+uv venv .venv
 source .venv/bin/activate
-python -m pip install -e ./vendor/bluesky-gym -e .
+uv pip install -e ./vendor/bluesky-gym -e ".[dev]"
 ```
 
-For an existing clone, run `git submodule update --init --recursive` first.
-Alternatively, `uv sync` installs the personal package and local upstream dependency.
+For an existing checkout with `.venv` already created, run from the repository
+root:
+
+```bash
+git submodule update --init --recursive
+source .venv/bin/activate
+uv pip install -e ./vendor/bluesky-gym -e ".[dev]"
+```
+
+The single `.venv` serves both packages:
+
+- `-e ./vendor/bluesky-gym` installs the upstream environments.
+- `-e ".[dev]"` installs your own `bluesky-pabloramesc` package from
+  `src/bluesky_pabloramesc/`, the `experiments` entry points, and pytest and Ruff.
+
+Both packages are editable, so source changes take effect without reinstalling.
+uv-created environments do not need pip installed; use `uv pip install` to
+manage their packages. Activate `.venv` in each new shell before running training
+or checks.
+
+Your package is imported as `bluesky_pabloramesc`; see
+[src/README.md](src/README.md) for its modules.
 
 ## Run
 
@@ -41,17 +62,33 @@ Run commands from this repository's root:
 ```bash
 python -m experiments.train_single_ppo --timesteps 2000000
 python -m experiments.train_single_sac --timesteps 2000000
+python -m experiments.train_single_td3 --timesteps 2000000
+python -m experiments.train_single_ddpg --timesteps 2000000
 python -m experiments.train_zoo_ppo 2000000
 python -m experiments.train_zoo_sac 2000000
 ```
 
+To add more training to an existing checkpoint:
+
+```bash
+python -m experiments.train_single_ppo resume --timesteps 500000
+```
+
+`--timesteps` adds steps to the saved total. See
+[resuming training](experiments/README.md#resuming-training) for other algorithms,
+replay buffers, and saving to a new path.
+
 The `train_single_*` scripts train single-agent MLP policies; `train_zoo_*`
 scripts train shared policies in the multi-agent environment.
 
+Training displays SB3's built-in tqdm/Rich progress bar alongside its training
+metrics.
+
 See [experiments/README.md](experiments/README.md) for training details.
 Generated checkpoints and results are kept under `experiments/models/` and
-`experiments/results/`, ignored by Git.
+`experiments/results/`, ignored by Git. Each training run saves a unique report
+with dates, training time, evaluation scores, episode CSVs, performance plots,
+and its own checkpoint. See [run reports](experiments/README.md#reviewing-a-training-run).
 
-Install development tools with `python -m pip install -e ".[dev]"`, then run
-`python -m pytest`. See the [checks](experiments/README.md#checks) for linting
+The setup above includes development tools. Run `python -m pytest`. See the [checks](experiments/README.md#checks) for linting
 and formatting commands.

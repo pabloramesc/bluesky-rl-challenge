@@ -59,7 +59,7 @@ def parse_args(algorithm, multi_agent=False, argv=None):
         choices=["train", "resume", "evaluate", "replay"],
         default="train",
     )
-    parser.add_argument("--timesteps", type=positive_int, default=2_000_000)
+    parser.add_argument("--timesteps", type=positive_int, default=100_000)
     parser.add_argument(
         "--episodes", type=positive_int, default=12 if multi_agent else 5
     )
@@ -76,6 +76,12 @@ def parse_args(algorithm, multi_agent=False, argv=None):
         "--model-path",
         type=Path,
         default=Path("experiments/models") / f"{algorithm}_{suffix}",
+    )
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=positive_int,
+        default=10_000,
+        help="additional steps between checkpoints, rounded up to a rollout boundary",
     )
     parser.add_argument("--stats-path", type=Path)
     parser.add_argument(
@@ -143,16 +149,21 @@ def run_cli(algorithm, multi_agent=False):
                 "model_type": model_type,
                 "resume_stats_path": args.stats_path,
             }
-        result = train(
-            builder,
-            env_factory,
-            args.output_path or args.model_path,
-            args.timesteps,
-            seed=args.seed,
-            eval_seed=args.eval_seed,
-            results_dir=args.results_dir,
-            **resume_options,
-            **options,
-        )
+        try:
+            result = train(
+                builder,
+                env_factory,
+                args.output_path or args.model_path,
+                args.timesteps,
+                seed=args.seed,
+                eval_seed=args.eval_seed,
+                results_dir=args.results_dir,
+                checkpoint_interval=args.checkpoint_interval,
+                **resume_options,
+                **options,
+            )
+        except KeyboardInterrupt:
+            print("Training interrupted.")
+            return
     mean, std = result
     print(f"Episode return: {mean:.2f} +/- {std:.2f}")

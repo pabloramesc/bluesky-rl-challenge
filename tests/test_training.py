@@ -367,3 +367,289 @@ def test_resume_missing_checkpoint_does_not_start_simulator(tmp_path):
             resume_from=tmp_path / "missing",
             model_type=PPO,
         )
+
+
+@pytest.mark.parametrize(
+    ("builder", "model_type", "settings"),
+    [
+        (build_ppo, PPO, {"n_steps": 8, "batch_size": 4, "n_epochs": 1}),
+        (build_sac, SAC, {"learning_starts": 2, "batch_size": 2, "buffer_size": 32}),
+        (build_td3, TD3, {"learning_starts": 2, "batch_size": 2, "buffer_size": 32}),
+        (build_ddpg, DDPG, {"learning_starts": 2, "batch_size": 2, "buffer_size": 32}),
+    ],
+)
+def test_periodic_checkpoints_can_resume(
+    tmp_path, env_factory, builder, model_type, settings
+):
+    from bluesky_pabloramesc.training import replay_buffer_path
+
+    results = tmp_path / "results"
+    builder = partial(builder, verbose=0, **settings)
+    train(
+        builder,
+        env_factory,
+        tmp_path / "policy",
+        8,
+        device="cpu",
+        episodes=1,
+        results_dir=results,
+        checkpoint_interval=4,
+    )
+    report = next(results.iterdir())
+    snapshots = sorted((report / "checkpoints").iterdir())
+    expected_steps = [8] if model_type == PPO else [4, 8]
+    assert [
+        int(path.name.removeprefix("step_")) for path in snapshots
+    ] == expected_steps
+    for directory, step in zip(snapshots, expected_steps):
+        model_path, stats_path = checkpoint_paths(directory / "policy")
+        model = model_type.load(model_path, device="cpu")
+        assert model.num_timesteps == step
+        env = VecNormalize.load(stats_path, env_factory())
+        try:
+            assert env.obs_rms.count == pytest.approx(step + 1.0001)
+        finally:
+            env.close()
+        if model_type != PPO:
+            model.load_replay_buffer(replay_buffer_path(model_path))
+            # The current transition is already stored before the periodic save.
+            assert model.replay_buffer.size() == step
+    metadata = json.loads((report / "run.json").read_text())
+    assert metadata["checkpoint_timesteps"] == 8
+    assert metadata["latest_checkpoint"] == str(
+        (snapshots[-1] / "policy.zip").resolve()
+    )
+    train(
+        builder,
+        env_factory,
+        tmp_path / "resumed",
+        8,
+        device="cpu",
+        episodes=1,
+        results_dir=results,
+        resume_from=snapshots[-1] / "policy",
+        model_type=model_type,
+        checkpoint_interval=4,
+    )
+    model = model_type.load(checkpoint_paths(tmp_path / "resumed")[0], device="cpu")
+    assert model.num_timesteps == 16
+
+
+@pytest.mark.parametrize(
+    ("builder", "model_type", "settings"),
+    [
+        (build_ppo, PPO, {"n_steps": 8, "batch_size": 4, "n_epochs": 1}),
+        (build_sac, SAC, {"learning_starts": 2, "batch_size": 2, "buffer_size": 32}),
+        (build_td3, TD3, {"learning_starts": 2, "batch_size": 2, "buffer_size": 32}),
+        (build_ddpg, DDPG, {"learning_starts": 2, "batch_size": 2, "buffer_size": 32}),
+    ],
+)
+def test_ctrl_c_saves_state_and_can_resume(
+    tmp_path, env_factory, monkeypatch, builder, model_type, settings
+):
+    from bluesky_pabloramesc.training import replay_buffer_path
+
+    interrupted = False
+    original_train = model_type.train
+
+    def interrupt_after_update(model, *args, **kwargs):
+        nonlocal interrupted
+        original_train(model, *args, **kwargs)
+        if not interrupted and model.num_timesteps >= 8:
+            interrupted = True
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(model_type, "train", interrupt_after_update)
+    env = env_factory()
+    path = tmp_path / "policy"
+    results = tmp_path / "results"
+    builder = partial(builder, verbose=0, **settings)
+    with pytest.raises(KeyboardInterrupt):
+        train(
+            builder,
+            lambda: env,
+            path,
+            32,
+            device="cpu",
+            episodes=1,
+            results_dir=results,
+            checkpoint_interval=4,
+        )
+    assert env.envs[0].unwrapped.closed
+    report = next(results.iterdir())
+    metadata = json.loads((report / "run.json").read_text())
+    assert metadata["status"] == "interrupted"
+    assert metadata["actual_timesteps"] == metadata["added_timesteps"] == 8
+    assert metadata["training_seconds"] > 0
+    assert metadata["training_episodes"] == 2
+    assert "finished_at" in metadata
+    assert "evaluation" not in metadata
+    assert (report / "performance.png").is_file()
+    model_path, stats_path = checkpoint_paths(path)
+    model = model_type.load(model_path, device="cpu")
+    assert model.num_timesteps == 8
+    assert model._n_updates > 0
+    restored_env = VecNormalize.load(stats_path, env_factory())
+    try:
+        assert restored_env.obs_rms.count == pytest.approx(9.0001)
+    finally:
+        restored_env.close()
+    if model_type != PPO:
+        model.load_replay_buffer(replay_buffer_path(model_path))
+        assert model.replay_buffer.size() == 8
+    train(
+        builder,
+        env_factory,
+        tmp_path / "resumed",
+        8,
+        device="cpu",
+        episodes=1,
+        results_dir=results,
+        resume_from=report / "policy",
+        model_type=model_type,
+        checkpoint_interval=4,
+    )
+    resumed = model_type.load(checkpoint_paths(tmp_path / "resumed")[0], device="cpu")
+    assert resumed.num_timesteps == 16
+    assert resumed._n_updates > model._n_updates
+
+
+def test_periodic_checkpoints_count_all_vector_slots(tmp_path, env_factory):
+    builder = partial(build_ppo, n_steps=2, batch_size=10, n_epochs=1, verbose=0)
+    train(
+        builder,
+        lambda: env_factory(n_envs=10),
+        tmp_path / "policy",
+        40,
+        device="cpu",
+        episodes=1,
+        results_dir=tmp_path / "results",
+        checkpoint_interval=15,
+    )
+    report = next((tmp_path / "results").iterdir())
+    checkpoints = report / "checkpoints"
+    assert sorted(path.name for path in checkpoints.iterdir()) == ["step_20", "step_40"]
+    model = PPO.load(checkpoints / "step_20" / "policy.zip", device="cpu")
+    assert model.num_timesteps == 20
+    assert model.n_envs == 10
+
+
+def test_resume_checkpoint_interval_starts_from_loaded_steps(tmp_path, env_factory):
+    builder = partial(
+        build_td3, learning_starts=2, batch_size=2, buffer_size=32, verbose=0
+    )
+    results = tmp_path / "results"
+    source = tmp_path / "source"
+    train(
+        builder, env_factory, source, 8, device="cpu", episodes=1, results_dir=results
+    )
+    train(
+        builder,
+        env_factory,
+        tmp_path / "resumed",
+        4,
+        device="cpu",
+        episodes=1,
+        results_dir=results,
+        resume_from=source,
+        model_type=TD3,
+        checkpoint_interval=3,
+    )
+    report = next(
+        path for path in results.iterdir() if path.name.startswith("resumed_")
+    )
+    assert [path.name for path in (report / "checkpoints").iterdir()] == ["step_11"]
+
+
+def test_real_sigint_saves_a_loadable_checkpoint(tmp_path):
+    import subprocess
+    import sys
+
+    script = """
+import signal
+import sys
+from functools import partial
+from pathlib import Path
+
+import gymnasium as gym
+import torch
+from stable_baselines3 import TD3
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv
+from bluesky_pabloramesc.models import build_td3
+from bluesky_pabloramesc.training import train
+
+torch.set_num_threads(1)
+root = Path(sys.argv[1])
+original_train = TD3.train
+
+def interrupt_after_update(self, *args, **kwargs):
+    original_train(self, *args, **kwargs)
+    signal.raise_signal(signal.SIGINT)
+
+TD3.train = interrupt_after_update
+builder = partial(build_td3, learning_starts=1, batch_size=2, buffer_size=16, verbose=0)
+env_factory = lambda: DummyVecEnv([lambda: Monitor(gym.make("Pendulum-v1"))])
+try:
+    train(builder, env_factory, root / "policy", 16, device="cpu", episodes=1,
+          results_dir=root / "results", checkpoint_interval=1)
+except KeyboardInterrupt:
+    pass
+else:
+    raise AssertionError("SIGINT did not interrupt training")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = next((tmp_path / "results").iterdir())
+    metadata = json.loads((report / "run.json").read_text())
+    assert metadata["status"] == "interrupted"
+    model = TD3.load(tmp_path / "policy.zip", device="cpu")
+    assert model.num_timesteps == 2
+    model.load_replay_buffer(tmp_path / "policy_replay_buffer.pkl")
+    assert model.replay_buffer.size() == 2
+    assert (tmp_path / "policy_vecnormalize.pkl").is_file()
+
+
+@pytest.mark.parametrize("interval", [0, -1])
+def test_invalid_checkpoint_interval_does_not_start_environment(tmp_path, interval):
+    def unexpected_env():
+        pytest.fail("Environment started before interval validation")
+
+    with pytest.raises(ValueError, match="checkpoint_interval must be positive"):
+        train(
+            build_ppo,
+            unexpected_env,
+            tmp_path / "policy",
+            8,
+            checkpoint_interval=interval,
+            results_dir=tmp_path / "results",
+        )
+    assert not (tmp_path / "results").exists()
+
+
+def test_interrupt_before_model_initialization_closes_environment(
+    tmp_path, env_factory
+):
+    env = env_factory()
+
+    def interrupted_builder(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        train(
+            interrupted_builder,
+            lambda: env,
+            tmp_path / "policy",
+            8,
+            results_dir=tmp_path / "results",
+        )
+    assert env.envs[0].unwrapped.closed
+    report = next((tmp_path / "results").iterdir())
+    assert json.loads((report / "run.json").read_text())["status"] == "interrupted"
+    assert not (report / "policy.zip").exists()

@@ -60,18 +60,18 @@ Your package is imported as `bluesky_pabloramesc`; see
 Run commands from this repository's root:
 
 ```bash
-python -m experiments.train_single_ppo --timesteps 2000000
-python -m experiments.train_single_sac --timesteps 2000000
-python -m experiments.train_single_td3 --timesteps 2000000
-python -m experiments.train_single_ddpg --timesteps 2000000
-python -m experiments.train_zoo_ppo 2000000
-python -m experiments.train_zoo_sac 2000000
+python -m experiments.train_single_ppo --timesteps 100000
+python -m experiments.train_single_sac --timesteps 100000
+python -m experiments.train_single_td3 --timesteps 100000
+python -m experiments.train_single_ddpg --timesteps 100000
+python -m experiments.train_zoo_ppo 100000
+python -m experiments.train_zoo_sac 100000
 ```
 
 To add more training to an existing checkpoint:
 
 ```bash
-python -m experiments.train_single_ppo resume --timesteps 500000
+python -m experiments.train_single_ppo resume --timesteps 100000
 ```
 
 `--timesteps` adds steps to the saved total. See
@@ -81,8 +81,10 @@ replay buffers, and saving to a new path.
 The `train_single_*` scripts train single-agent MLP policies; `train_zoo_*`
 scripts train shared policies in the multi-agent environment.
 
-Training displays SB3's built-in tqdm/Rich progress bar alongside its training
-metrics.
+Training defaults to 100,000 steps and displays SB3's tqdm/Rich progress bar.
+Periodic checkpoints are saved every 10,000 steps at rollout boundaries. Ctrl+C
+saves the current policy, normalization, replay buffer, and partial run report.
+Resume it with the same algorithm's `resume` command.
 
 See [experiments/README.md](experiments/README.md) for training details.
 Generated checkpoints and results are kept under `experiments/models/` and

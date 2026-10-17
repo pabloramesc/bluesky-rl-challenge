@@ -9,6 +9,7 @@ from time import perf_counter
 from uuid import uuid4
 
 import numpy as np
+from stable_baselines3.common.callbacks import BaseCallback, ProgressBarCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import VecNormalize
@@ -44,6 +45,103 @@ def replay_buffer_path(model_path):
     """
     model_path, _ = checkpoint_paths(model_path)
     return model_path.with_name(f"{model_path.stem}_replay_buffer.pkl")
+
+
+def save_checkpoint(model, env, model_path):
+    """Save a policy together with normalization and any off-policy replay buffer.
+
+    Args:
+        model: SB3 model to save.
+        env: Matching VecNormalize environment.
+        model_path: Destination checkpoint stem or archive path.
+    """
+    model_path, stats_path = checkpoint_paths(model_path)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    model.save(model_path)
+    env.save(stats_path)
+    if hasattr(model, "save_replay_buffer"):
+        model.save_replay_buffer(replay_buffer_path(model_path))
+
+
+def save_run_checkpoint(model, env, model_path, directory):
+    """Archive the run's state and update the regular checkpoint copies.
+
+    Args:
+        model: SB3 model to save.
+        env: Matching VecNormalize environment.
+        model_path: Destination for the regular checkpoint.
+        directory: Run report directory containing the archived policy.
+    """
+    archived = directory / "policy"
+    save_checkpoint(model, env, archived)
+    targets = [*checkpoint_paths(model_path)]
+    sources = [*checkpoint_paths(archived)]
+    if hasattr(model, "save_replay_buffer"):
+        sources.append(replay_buffer_path(archived))
+        targets.append(replay_buffer_path(model_path))
+    for source, target in zip(sources, targets):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() != target.resolve():
+            copyfile(source, target)
+
+
+class PeriodicCheckpoint(BaseCallback):
+    """Save complete training state at rollout boundaries after a step interval."""
+
+    def __init__(self, directory, interval, metadata):
+        """Configure periodic saves relative to the start of this training segment.
+
+        Args:
+            directory: Run report directory for checkpoint subdirectories.
+            interval: Additional environment steps between saves.
+            metadata: Shared run metadata updated after each complete save.
+        """
+        super().__init__()
+        self.directory = directory
+        self.interval = interval
+        self.metadata = metadata
+
+    def _on_training_start(self):
+        """Set the first save threshold using the model's cumulative step count."""
+        self.next_checkpoint = self.num_timesteps + self.interval
+
+    def _on_step(self):
+        """Continue collection so the current transition reaches the replay buffer.
+
+        Returns:
+            True to continue training.
+        """
+        return True
+
+    def _on_rollout_end(self):
+        """Save due checkpoints after all collected transitions have been stored."""
+        if self.num_timesteps < self.next_checkpoint:
+            return
+        path = self.directory / "checkpoints" / f"step_{self.num_timesteps}" / "policy"
+        save_checkpoint(self.model, self.training_env, path)
+        self.metadata["latest_checkpoint"] = str(path.with_suffix(".zip").resolve())
+        self.metadata["checkpoint_timesteps"] = self.num_timesteps
+        write_metadata(self.directory, self.metadata)
+        self.next_checkpoint = self.num_timesteps + self.interval
+        print(f"Saved periodic checkpoint: {path}")
+
+
+def record_training_progress(metadata, model, history, learning_started):
+    """Record elapsed learning time and cumulative/additional training steps.
+
+    Args:
+        metadata: Run report mapping to update.
+        model: Current SB3 model.
+        history: Episode history for this segment.
+        learning_started: Monotonic timestamp at the start of learning.
+    """
+    metadata.setdefault("training_seconds", perf_counter() - learning_started)
+    metadata["added_timesteps"] = model.num_timesteps - metadata["initial_timesteps"]
+    metadata["actual_timesteps"] = model.num_timesteps
+    metadata["training_episodes"] = len(history.rows)
+    metadata["steps_per_second"] = metadata["added_timesteps"] / max(
+        metadata["training_seconds"], 1e-9
+    )
 
 
 def validate_checkpoint(model_path, stats_path=None):
@@ -110,6 +208,7 @@ def train(
     resume_from=None,
     model_type=None,
     resume_stats_path=None,
+    checkpoint_interval=10_000,
 ):
     """Train or resume a policy, save its artifacts, and evaluate raw returns.
 
@@ -129,14 +228,17 @@ def train(
         resume_from: Source checkpoint stem or archive, or None to start fresh.
         model_type: SB3 algorithm class required when resuming.
         resume_stats_path: Source normalization file, or None to infer it.
+        checkpoint_interval: Additional steps between saves at rollout boundaries.
 
     Returns:
         Mean and standard deviation of final raw evaluation returns.
 
     Raises:
-        ValueError: Resuming is requested without model_type.
+        ValueError: A nonpositive interval or resume without model_type is supplied.
         FileNotFoundError: A required resume checkpoint file is missing.
     """
+    if checkpoint_interval <= 0:
+        raise ValueError("checkpoint_interval must be positive")
     if resume_from is not None:
         if model_type is None:
             raise ValueError("model_type is required when resuming training")
@@ -154,6 +256,7 @@ def train(
         "seed": seed,
         "evaluation_seed": eval_seed,
         "requested_timesteps": timesteps,
+        "checkpoint_interval": checkpoint_interval,
         "evaluation_episodes": episodes,
         "model_path": str(model_path.resolve()),
         "stats_path": str(stats_path.resolve()),
@@ -165,6 +268,9 @@ def train(
     write_metadata(directory, metadata)
     env = None
     logger = None
+    model = None
+    learning_started = None
+    progress = None
     try:
         env = env_factory()
         if resume_from is None:
@@ -227,31 +333,17 @@ def train(
         write_metadata(directory, metadata)
         logger = configure(str(directory), ["stdout", "csv"])
         model.set_logger(logger)
+        periodic = PeriodicCheckpoint(directory, checkpoint_interval, metadata)
+        progress = ProgressBarCallback()
         learning_started = perf_counter()
         model.learn(
             total_timesteps=timesteps,
-            callback=history,
-            progress_bar=True,
+            callback=[history, periodic, progress],
             reset_num_timesteps=resume_from is None,
         )
-        metadata["training_seconds"] = perf_counter() - learning_started
+        record_training_progress(metadata, model, history, learning_started)
         logger.dump(step=model.num_timesteps)
-        metadata["added_timesteps"] = model.num_timesteps - initial_timesteps
-        metadata["steps_per_second"] = (
-            metadata["added_timesteps"] / metadata["training_seconds"]
-        )
-        metadata["actual_timesteps"] = model.num_timesteps
-        metadata["training_episodes"] = len(history.rows)
-        model_path.parent.mkdir(parents=True, exist_ok=True)
-        model.save(model_path)
-        env.save(stats_path)
-        # Preserve each run even when the convenient default checkpoint is replaced.
-        model.save(directory / "policy.zip")
-        env.save(directory / "policy_vecnormalize.pkl")
-        if hasattr(model, "save_replay_buffer"):
-            archived_buffer = replay_buffer_path(directory / "policy")
-            model.save_replay_buffer(archived_buffer)
-            copyfile(archived_buffer, replay_buffer_path(model_path))
+        save_run_checkpoint(model, env, model_path, directory)
         evaluation_started = perf_counter()
         rewards, lengths = evaluate(model, env, episodes, eval_seed, True)
         mean, std = float(np.mean(rewards)), float(np.std(rewards))
@@ -267,15 +359,27 @@ def train(
         print(f"Saved model: {model_path}; normalization: {stats_path}")
         print(f"Run report: {directory}")
         return mean, std
+    except KeyboardInterrupt:
+        metadata["status"] = "interrupted"
+        if model is not None and learning_started is not None:
+            record_training_progress(metadata, model, history, learning_started)
+            save_run_checkpoint(model, env, model_path, directory)
+            metadata["interrupted_checkpoint"] = str(
+                (directory / "policy.zip").resolve()
+            )
+            logger.dump(step=model.num_timesteps)
+            history.plot()
+            print(f"Interrupted training saved: {model_path}; run report: {directory}")
+        raise
     except BaseException as error:
-        metadata["status"] = (
-            "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
-        )
+        metadata["status"] = "failed"
         metadata["error"] = f"{type(error).__name__}: {error}"
         raise
     finally:
         metadata["finished_at"] = datetime.now(timezone.utc).isoformat()
         write_metadata(directory, metadata)
+        if progress is not None and hasattr(progress, "pbar"):
+            progress.pbar.close()
         if logger is not None:
             logger.close()
         if env is not None:

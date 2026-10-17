@@ -10,6 +10,8 @@ from bluesky_pabloramesc.training import EVAL_SEED
 def test_single_agent_defaults(algorithm):
     args = parse_args(algorithm, argv=[])
     assert args.mode == "train"
+    assert args.timesteps == 100_000
+    assert args.checkpoint_interval == 10_000
     assert args.model_path == Path(f"experiments/models/{algorithm}_single_mlp")
 
 
@@ -24,7 +26,9 @@ def test_legacy_multi_agent_commands():
     assert args.stats_path == Path("stats.pkl")
 
 
-@pytest.mark.parametrize("option", ["--episodes", "--timesteps"])
+@pytest.mark.parametrize(
+    "option", ["--episodes", "--timesteps", "--checkpoint-interval"]
+)
 @pytest.mark.parametrize("value", ["0", "-1", "abc"])
 def test_invalid_counts(option, value):
     with pytest.raises(SystemExit):
@@ -91,3 +95,26 @@ def test_resume_cli_dispatch(algorithm, monkeypatch):
     assert kwargs["resume_from"] == Path("old")
     assert kwargs["resume_stats_path"] == Path("stats.pkl")
     assert kwargs["model_type"] is getattr(cli, algorithm.upper())
+
+
+def test_checkpoint_interval_cli_dispatch(monkeypatch):
+    from unittest.mock import Mock
+
+    from bluesky_pabloramesc import cli
+
+    monkeypatch.setattr("sys.argv", ["trainer", "--checkpoint-interval", "500"])
+    workflow = Mock(return_value=(6.0, 0.0))
+    monkeypatch.setattr(cli, "train", workflow)
+    cli.run_cli("ppo")
+    assert workflow.call_args.kwargs["checkpoint_interval"] == 500
+
+
+def test_ctrl_c_cli_exits_cleanly(monkeypatch, capsys):
+    from unittest.mock import Mock
+
+    from bluesky_pabloramesc import cli
+
+    monkeypatch.setattr("sys.argv", ["trainer"])
+    monkeypatch.setattr(cli, "train", Mock(side_effect=KeyboardInterrupt))
+    cli.run_cli("ppo")
+    assert "Training interrupted." in capsys.readouterr().out

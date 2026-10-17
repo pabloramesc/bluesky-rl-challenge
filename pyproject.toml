@@ -1,16 +1,25 @@
 [project]
-name = "bluesky-agents"
+name = "bluesky-pabloramesc"
 version = "0.1.0"
 description = "Personal agents and experiments for TU Delft BlueSky-Gym"
 requires-python = ">=3.10"
 dependencies = ["bluesky-gym"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["experiments"]
+packages = ["src/bluesky_pabloramesc", "experiments"]
 
 [tool.uv.sources]
 bluesky-gym = { path = "vendor/bluesky-gym", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"

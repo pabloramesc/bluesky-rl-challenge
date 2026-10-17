@@ -1,8 +1,4 @@
-"""Shared environment plumbing for the tuned PPO and SAC MARL trainers.
-
-This module deliberately lives separately from ``train_zoo.py`` so the
-original minimal example remains unchanged.
-"""
+"""Fixed-slot PettingZoo wrappers for shared-policy training."""
 
 import numpy as np
 import supersuit as ss
@@ -11,12 +7,7 @@ from pettingzoo.utils import BaseParallelWrapper
 from stable_baselines3.common.vec_env import VecMonitor
 from supersuit.vector.sb3_vector_wrapper import SB3VecEnvWrapper
 
-from bluesky_zoo.competition_v0 import CompetitionZooEnv
-
-
-SEED = 0
 N_AGENTS = 10
-EVAL_EPISODES = 12
 
 
 class FlattenObs(BaseParallelWrapper):
@@ -104,27 +95,11 @@ class SeedableSB3VecEnvWrapper(SB3VecEnvWrapper):
 
 def make_vec_env(render_mode=None):
     """Create ten agent slots backed by one process-global BlueSky env."""
+    from bluesky_zoo.competition_v0 import CompetitionZooEnv
+
     env = CompetitionZooEnv(render_mode=render_mode, n_agents=N_AGENTS)
     env = FlattenObs(env)
     env = JointEpisodeBlackDeath(env)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = SeedableSB3VecEnvWrapper(env)
     return VecMonitor(env)
-
-
-def evaluate(venv, n_episodes, model=None):
-    """Return mean and std of per-agent episode returns."""
-    returns = []
-    obs = venv.reset()
-    while len(returns) < n_episodes:
-        if model is None:
-            actions = np.stack(
-                [venv.action_space.sample() for _ in range(venv.num_envs)]
-            )
-        else:
-            actions, _ = model.predict(obs, deterministic=True)
-        obs, _, _, infos = venv.step(actions)
-        for info in infos:
-            if "episode" in info:
-                returns.append(info["episode"]["r"])
-    return float(np.mean(returns)), float(np.std(returns))

@@ -5,15 +5,47 @@ competition environments. Run commands from the repository root.
 
 ## Setup and training
 
-Install the upstream package into your active Python environment:
+```bash
+python -m pip install -e ./vendor/bluesky-gym -e ".[dev]"
+```
+
+### Single-agent MLP baselines
+
+PPO and SAC control one aircraft in the Gymnasium `CompetitionEnv`. Both use
+two hidden layers of 256 units. PPO uses tanh actor/value networks; SAC uses
+ReLU actor/twin-Q networks. Edit the builders in
+[`models.py`](../src/bluesky_pabloramesc/models.py) to customize them.
+These baselines use Stable-Baselines3 for the learning algorithms.
 
 ```bash
-python -m pip install -e ./vendor/bluesky-gym -e .
+python -m experiments.train_single_ppo --timesteps 2000000
+python -m experiments.train_single_sac --timesteps 2000000
+python -m experiments.train_single_ppo evaluate --episodes 100 --eval-seed 10000
+python -m experiments.train_single_ppo replay --episodes 3
+python -m experiments.train_single_sac replay --episodes 3
+```
+
+Install the project before running these commands. Models
+default to `experiments/models/ppo_single_mlp.zip` and `sac_single_mlp.zip`,
+each with a matching `_vecnormalize.pkl` file. Keep both files for replay.
+Use `--model-path`, `--seed`, and `--device` to configure training. Evaluation
+uses a separate `--eval-seed` (default `10000`) in all modes. `evaluate` loads a
+checkpoint without rendering; `replay` renders it. These modes also accept
+`--stats-path` for an explicit normalization file. Use the same evaluation seed,
+episode count, and environment settings when comparing policies; this does not
+yet replace an explicit fixed scenario suite or multi-seed analysis. Training ends
+with evaluation on raw rewards, with normalization statistics frozen. Run one
+environment per process because BlueSky shares simulator state.
+
+### Multi-agent baselines
+
+```bash
 python -m experiments.train_zoo_ppo 2000000
 python -m experiments.train_zoo_sac 2000000
 ```
 
-PPO and SAC share wrappers in `train_zoo_marl_common.py`. Their default models
+PPO and SAC share wrappers in
+[`multi_agent.py`](../src/bluesky_pabloramesc/multi_agent.py). Their default models
 and normalization sidecars are written to `experiments/models/`.
 
 ```bash
@@ -25,33 +57,21 @@ The earlier upstream-example checkpoint is preserved as
 `experiments/models/ppo_competition.zip`; it is distinct from the tuned trainers'
 models and has no normalization sidecar.
 
-## MAPPO / MARLlib
+Put custom agents, algorithms, and reusable utilities in
+[`src/bluesky_pabloramesc/`](../src/README.md). Keep training scripts, configs,
+and experiment notes here. Models, results, and virtual environments are ignored
+by Git; store large outputs separately when sharing.
 
-MARLlib uses the separate legacy `.venv-marllib` runtime described in the trainer
-module. Keep it at the repository root. Install the upstream source into that runtime
-as a source path (upstream package metadata requires Python >=3.10):
-
-```bash
-.venv-marllib/bin/python - <<'PYTHON'
-from pathlib import Path
-import sysconfig
-source = Path("vendor/bluesky-gym").resolve()
-(Path(sysconfig.get_path("purelib")) / "bluesky_gym_source.pth").write_text(str(source) + "\n")
-PYTHON
-```
-
-Preserve the existing MARLlib/Ray dependency versions and patches. If MARLlib is unavailable in the current
-interpreter, the trainer automatically uses `.venv-marllib/bin/python` when present.
+## Checks
 
 ```bash
-python -m experiments.train_zoo_mappo_marllib 2000000 --num-gpus 1
+python -m pytest
+ruff check src experiments tests
+ruff format --check src experiments tests
 ```
 
-`train_zoo_marllib_env.py` adapts the environment for MARLlib;
-`marllib_bluesky_competition.yaml` contains its configuration. The BlueSky runtime
-working directory stays under `.venv-marllib/`. Training results default to
-`experiments/results/marllib_mappo/`; use `--results-dir` to override this.
-Existing result logs are preserved verbatim and may contain old absolute paths.
+Tests use short synthetic environments to check policy updates, checkpoint
+round trips, frozen evaluation statistics, cleanup, and multi-agent padding.
+They do not start BlueSky or measure training quality.
 
-Models, results, and virtual environments are ignored by Git. Add new agent code,
-configs, and experiment notes here; store large outputs separately when sharing.
+Implementation status and remaining comparisons live in [ROADMAP.md](../ROADMAP.md).

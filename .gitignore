@@ -1,7 +1,6 @@
 __pycache__/
 *.py[cod]
 .venv/
-.venv-marllib/
 .vscode/
 .DS_Store
 /experiments/models/
@@ -9,3 +8,5 @@ __pycache__/
 /logs/
 /dist/
 *.egg-info/
+.pytest_cache/
+.ruff_cache/

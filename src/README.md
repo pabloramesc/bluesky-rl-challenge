@@ -11,6 +11,9 @@ Put reusable code in `bluesky_pabloramesc/` and experiment entry points in
 | `training.py` | Training, checkpoints, evaluation, and replay |
 | `reporting.py` | Run metadata, raw episode histories, and performance plots |
 | `cli.py` | Shared command-line options |
+| `actions.py` | Validated action configuration and heading/CAS target mappings |
+| `observations.py` | Geometry encodings, ownship features, and shared environment hooks |
+| `comparison.py` | Isolated action/observation ablations and paired reports |
 
 Add your own modules alongside these as needed. For example, after creating
 `agents.py`, import it with `from bluesky_pabloramesc.agents import MyAgent`.

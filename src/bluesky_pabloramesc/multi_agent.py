@@ -166,20 +166,33 @@ class SeedableSB3VecEnvWrapper(SB3VecEnvWrapper):
         return observations
 
 
-def make_vec_env(render_mode=None):
+def make_vec_env(render_mode=None, control_config=None):
     """Create ten monitored agent slots backed by one BlueSky simulator.
 
     Create only one BlueSky environment per process; simulator state is global.
 
     Args:
         render_mode: Rendering mode, or None for headless operation.
+        control_config: ControlConfig, or None for the unchanged legacy interface.
 
     Returns:
         VecMonitor wrapping a seeded SB3-compatible shared-policy environment.
     """
     from bluesky_zoo.competition_v0 import CompetitionZooEnv
 
-    env = CompetitionZooEnv(render_mode=render_mode, n_agents=N_AGENTS)
+    from .actions import ControlConfig
+    from .observations import ControlHooks, extend_observation_space
+
+    class ControlledCompetitionZooEnv(ControlHooks, CompetitionZooEnv):
+        def __init__(self):
+            self.control_config = control_config or ControlConfig()
+            super().__init__(render_mode=render_mode, n_agents=N_AGENTS)
+            self.observation_spaces = {
+                agent: extend_observation_space(space, self.control_config)
+                for agent, space in self.observation_spaces.items()
+            }
+
+    env = ControlledCompetitionZooEnv()
     env = FlattenObs(env)
     env = JointEpisodeBlackDeath(env)
     env = ss.pettingzoo_env_to_vec_env_v1(env)

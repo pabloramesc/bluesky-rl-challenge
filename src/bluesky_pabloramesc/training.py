@@ -1,5 +1,6 @@
 """Shared training, checkpoint, and evaluation workflow."""
 
+import json
 import warnings
 from datetime import datetime, timezone
 from importlib.metadata import version
@@ -34,6 +35,44 @@ def checkpoint_paths(model_path):
     return Path(f"{stem}.zip"), Path(f"{stem}_vecnormalize.pkl")
 
 
+def control_config_path(model_path):
+    """Locate the environment configuration saved beside a policy."""
+    path, _ = checkpoint_paths(model_path)
+    return path.with_name(f"{path.stem}_control.json")
+
+
+def load_control_config(model_path):
+    """Read saved action semantics; checkpoints predating this feature are legacy."""
+    from .actions import ControlConfig
+
+    path = control_config_path(model_path)
+    return (
+        ControlConfig(**json.loads(path.read_text()))
+        if path.is_file()
+        else ControlConfig()
+    )
+
+
+def validate_control_config(model_path, config):
+    """Reject changes to action semantics even when tensor shapes agree."""
+    if config is not None and load_control_config(model_path) != config:
+        raise ValueError(
+            "Checkpoint control configuration does not match requested settings"
+        )
+
+
+def validate_policy_config(model, config):
+    """Check the archive copy too, detecting missing or stale sidecars."""
+    from .actions import ControlConfig
+
+    if (
+        config is not None
+        and ControlConfig(**getattr(model, "control_config", config.to_dict()))
+        != config
+    ):
+        raise ValueError("Policy archive control configuration does not match sidecar")
+
+
 def replay_buffer_path(model_path):
     """Derive the replay-buffer sidecar path for a checkpoint.
 
@@ -59,6 +98,10 @@ def save_checkpoint(model, env, model_path):
     model_path.parent.mkdir(parents=True, exist_ok=True)
     model.save(model_path)
     env.save(stats_path)
+    if getattr(model, "control_config", None) is not None:
+        control_config_path(model_path).write_text(
+            json.dumps(model.control_config, indent=2) + "\n"
+        )
     if hasattr(model, "save_replay_buffer"):
         model.save_replay_buffer(replay_buffer_path(model_path))
 
@@ -76,6 +119,9 @@ def save_run_checkpoint(model, env, model_path, directory):
     save_checkpoint(model, env, archived)
     targets = [*checkpoint_paths(model_path)]
     sources = [*checkpoint_paths(archived)]
+    if control_config_path(archived).is_file():
+        sources.append(control_config_path(archived))
+        targets.append(control_config_path(model_path))
     if hasattr(model, "save_replay_buffer"):
         sources.append(replay_buffer_path(archived))
         targets.append(replay_buffer_path(model_path))
@@ -195,6 +241,55 @@ def evaluate(model, env, episodes=5, seed=0, return_episode_rewards=False):
         env.training, env.norm_reward = training, norm_reward
 
 
+def evaluate_scenarios(model, env, seeds):
+    """Evaluate explicit scenario seeds, retaining final metrics for every agent.
+
+    Multi-agent slots complete jointly. Preserve each departing agent's last
+    metrics before the fixed-slot wrapper begins returning empty info mappings.
+    """
+    training, norm_reward = env.training, env.norm_reward
+    env.training, env.norm_reward = False, False
+    rows = []
+    try:
+        for seed in seeds:
+            env.seed(seed)
+            observations = env.reset()
+            returns = np.zeros(env.num_envs)
+            lengths = np.zeros(env.num_envs, dtype=int)
+            final_infos = [{} for _ in range(env.num_envs)]
+            finished = np.zeros(env.num_envs, dtype=bool)
+            while not finished.all():
+                actions, _ = model.predict(observations, deterministic=True)
+                observations, rewards, dones, infos = env.step(actions)
+                returns[~finished] += rewards[~finished]
+                lengths[~finished] += 1
+                for index, info in enumerate(infos):
+                    if not finished[index] and "flight_time" in info:
+                        final_infos[index] = {
+                            key: float(value)
+                            for key, value in info.items()
+                            if isinstance(value, (int, float, np.number))
+                        }
+                finished |= dones | np.array(
+                    [bool(info.get("waypoint_reached", False)) for info in infos]
+                )
+            for index, info in enumerate(final_infos):
+                if "waypoint_reached" in info:
+                    info["timed_out"] = float(not info["waypoint_reached"])
+                rows.append(
+                    {
+                        **info,
+                        "scenario_seed": int(seed),
+                        "agent_index": index,
+                        "return": float(returns[index]),
+                        "length": int(lengths[index]),
+                    }
+                )
+        return rows
+    finally:
+        env.training, env.norm_reward = training, norm_reward
+
+
 def train(
     builder,
     env_factory,
@@ -209,6 +304,8 @@ def train(
     model_type=None,
     resume_stats_path=None,
     checkpoint_interval=10_000,
+    control_config=None,
+    evaluation_seeds=None,
 ):
     """Train or resume a policy, save its artifacts, and evaluate raw returns.
 
@@ -229,6 +326,8 @@ def train(
         model_type: SB3 algorithm class required when resuming.
         resume_stats_path: Source normalization file, or None to infer it.
         checkpoint_interval: Additional steps between saves at rollout boundaries.
+        control_config: Optional action/observation settings saved with every checkpoint.
+        evaluation_seeds: Explicit scenario seeds; evaluate every agent once per seed.
 
     Returns:
         Mean and standard deviation of final raw evaluation returns.
@@ -237,12 +336,15 @@ def train(
         ValueError: A nonpositive interval or resume without model_type is supplied.
         FileNotFoundError: A required resume checkpoint file is missing.
     """
+    if evaluation_seeds is not None and not evaluation_seeds:
+        raise ValueError("evaluation_seeds must not be empty")
     if checkpoint_interval <= 0:
         raise ValueError("checkpoint_interval must be positive")
     if resume_from is not None:
         if model_type is None:
             raise ValueError("model_type is required when resuming training")
         source_model, source_stats = validate_checkpoint(resume_from, resume_stats_path)
+        validate_control_config(source_model, control_config)
     started = datetime.now(timezone.utc)
     model_path, stats_path = checkpoint_paths(model_path)
     run_id = f"{model_path.stem}_{started:%Y%m%dT%H%M%S}_{uuid4().hex[:8]}"
@@ -250,6 +352,9 @@ def train(
     directory.mkdir(parents=True)
     history = EpisodeHistory(directory)
     metadata = {
+        "control_config": control_config.to_dict()
+        if control_config is not None
+        else None,
         "run_id": run_id,
         "status": "running",
         "started_at": started.isoformat(),
@@ -258,6 +363,7 @@ def train(
         "requested_timesteps": timesteps,
         "checkpoint_interval": checkpoint_interval,
         "evaluation_episodes": episodes,
+        "evaluation_scenario_seeds": evaluation_seeds,
         "model_path": str(model_path.resolve()),
         "stats_path": str(stats_path.resolve()),
         "versions": {
@@ -281,6 +387,7 @@ def train(
             env.training = True
             env.norm_reward = True
             model = model_type.load(source_model, env=env, device=device)
+            validate_policy_config(model, control_config)
             model.set_random_seed(seed)
             metadata["resumed_from"] = str(source_model.resolve())
             metadata["resumed_stats_from"] = str(source_stats.resolve())
@@ -297,6 +404,8 @@ def train(
                         stacklevel=2,
                     )
                     model.learning_starts += model.num_timesteps
+        if control_config is not None:
+            model.control_config = control_config.to_dict()
         initial_timesteps = model.num_timesteps
         metadata["initial_timesteps"] = initial_timesteps
         metadata.update(
@@ -345,7 +454,14 @@ def train(
         logger.dump(step=model.num_timesteps)
         save_run_checkpoint(model, env, model_path, directory)
         evaluation_started = perf_counter()
-        rewards, lengths = evaluate(model, env, episodes, eval_seed, True)
+        if evaluation_seeds is None:
+            rewards, lengths = evaluate(model, env, episodes, eval_seed, True)
+        else:
+            scenario_rows = evaluate_scenarios(model, env, evaluation_seeds)
+            metadata["evaluation_scenarios"] = scenario_rows
+            metadata["evaluation_episodes"] = len(scenario_rows)
+            rewards = [row["return"] for row in scenario_rows]
+            lengths = [row["length"] for row in scenario_rows]
         mean, std = float(np.mean(rewards)), float(np.std(rewards))
         metadata["evaluation"] = {
             "mean_return": mean,
@@ -395,6 +511,7 @@ def replay(
     episodes=3,
     stats_path=None,
     render_mode="human",
+    control_config=None,
 ):
     """Evaluate a saved policy with frozen normalization and optional rendering.
 
@@ -407,6 +524,7 @@ def replay(
         episodes: Number of evaluation episodes.
         stats_path: Explicit normalization file, or None to infer it.
         render_mode: Rendering mode, or None for headless evaluation.
+        control_config: Requested settings, validated against the saved checkpoint.
 
     Returns:
         Mean and standard deviation of raw evaluation returns.
@@ -415,12 +533,14 @@ def replay(
         FileNotFoundError: The policy or normalization file is missing.
     """
     model_path, stats_path = validate_checkpoint(model_path, stats_path)
+    validate_control_config(model_path, control_config)
 
     base_env = env_factory(render_mode=render_mode)
     env = base_env
     try:
         env = VecNormalize.load(stats_path, base_env)
         model = model_type.load(model_path, env=env, device=device)
+        validate_policy_config(model, control_config)
         return evaluate(model, env, episodes, seed)
     finally:
         env.close()

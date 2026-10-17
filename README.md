@@ -15,6 +15,7 @@ Upstream attribution, license, examples, and documentation live in
 See [UPSTREAM.md](UPSTREAM.md) for the pinned revision and update workflow.
 
 See [ROADMAP.md](ROADMAP.md) for implementation status and planned comparisons.
+See [RESEARCH.md](RESEARCH.md) for current findings, baseline results, and next experiments.
 
 Use [src/](src/README.md) for your own implementations and import them from
 training scripts in `experiments/`.
@@ -85,6 +86,9 @@ Training defaults to 100,000 steps and displays SB3's tqdm/Rich progress bar.
 Periodic checkpoints are saved every 10,000 steps at rollout boundaries. Ctrl+C
 saves the current policy, normalization, replay buffer, and partial run report.
 Resume it with the same algorithm's `resume` command.
+
+See the [action comparison](experiments/README.md)
+for relative/absolute heading and speed experiments.
 
 See [experiments/README.md](experiments/README.md) for training details.
 Generated checkpoints and results are kept under `experiments/models/` and

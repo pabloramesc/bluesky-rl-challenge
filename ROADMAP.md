@@ -11,9 +11,11 @@ Progress from reproducible baselines to advanced, safety-aware multi-agent contr
 
 ## 2. Actions and observations
 
-- [ ] Compare relative vs absolute heading/speed actions
+- [x] Implement relative/absolute heading/speed action options and paired 2×2 comparison runner — [usage](experiments/README.md)
+- [ ] Run the multi-seed action comparison and select a configuration
 - [ ] Optimize decision frequency
 - [ ] Compare custom ego-centric/goal-relative features against the upstream baseline
+  — [three-variant runner](experiments/README.md) implemented; results pending
 - [ ] Add TCPA, DCPA, and closing rate; compare with existing relative-bearing features
 - [ ] Improve obstacle/sector geometry (nearest edge, ray casting)
 - [ ] Compare raw vs engineered features

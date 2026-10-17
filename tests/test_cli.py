@@ -12,7 +12,27 @@ def test_single_agent_defaults(algorithm):
     assert args.mode == "train"
     assert args.timesteps == 100_000
     assert args.checkpoint_interval == 10_000
+    assert args.seed == 42
     assert args.model_path == Path(f"experiments/models/{algorithm}_single_mlp")
+
+
+@pytest.mark.parametrize("observation", [False, True])
+@pytest.mark.parametrize("seeds", [None, [7], [0, 1, 2]])
+def test_comparisons_use_one_training_seed_unless_explicit(
+    observation, seeds, tmp_path, monkeypatch
+):
+    from unittest.mock import Mock
+
+    from bluesky_pabloramesc import cli, comparison
+
+    workflow = Mock()
+    monkeypatch.setattr(comparison, "run_comparison", workflow)
+    arguments = ["--output-dir", str(tmp_path / "comparison")]
+    if seeds is not None:
+        arguments += ["--seeds", *map(str, seeds)]
+    cli.run_comparison_cli(arguments, observation=observation)
+    assert workflow.call_args.args[0].seeds == ([0] if seeds is None else seeds)
+    assert workflow.call_args.kwargs["observation"] == observation
 
 
 def test_legacy_multi_agent_commands():
@@ -24,6 +44,28 @@ def test_legacy_multi_agent_commands():
     assert args.mode == "replay"
     assert args.model_path == Path("model.zip")
     assert args.stats_path == Path("stats.pkl")
+
+
+@pytest.mark.parametrize("observation", [False, True])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_comparison_output_directory_defaults_and_override(
+    observation, explicit, monkeypatch
+):
+    from unittest.mock import Mock
+
+    from bluesky_pabloramesc import cli, comparison
+
+    workflow = Mock()
+    monkeypatch.setattr(comparison, "run_comparison", workflow)
+    arguments = ["--output-dir", "custom/results"] if explicit else []
+    cli.run_comparison_cli(arguments, observation=observation)
+    expected = (
+        Path("custom/results")
+        if explicit
+        else Path("experiments/results")
+        / ("observation_comparison" if observation else "action_comparison")
+    )
+    assert workflow.call_args.args[0].output_dir == expected
 
 
 @pytest.mark.parametrize(
@@ -118,3 +160,55 @@ def test_ctrl_c_cli_exits_cleanly(monkeypatch, capsys):
     monkeypatch.setattr(cli, "train", Mock(side_effect=KeyboardInterrupt))
     cli.run_cli("ppo")
     assert "Training interrupted." in capsys.readouterr().out
+
+
+def test_control_cli_validation_and_saved_defaults(tmp_path):
+    import json
+
+    from bluesky_pabloramesc.actions import ControlConfig
+    from bluesky_pabloramesc.training import control_config_path
+
+    with pytest.raises(SystemExit):
+        parse_args("ppo", argv=["--heading-action", "absolute"])
+    with pytest.raises(SystemExit):
+        parse_args("ppo", argv=["--speed-action", "absolute"])
+    config = ControlConfig(
+        heading_action="absolute",
+        speed_action="absolute",
+        observation_profile="control",
+        speed_min=100,
+        speed_max=500,
+    )
+    path = tmp_path / "policy"
+    control_config_path(path).write_text(json.dumps(config.to_dict()))
+    args = parse_args("ppo", argv=["evaluate", "--model-path", str(path)])
+    assert args.control_config == config
+    with pytest.raises(SystemExit):
+        parse_args(
+            "ppo",
+            argv=["resume", "--model-path", str(path), "--heading-action", "relative"],
+        )
+
+
+def test_observation_encoding_restored_and_cannot_be_overridden(tmp_path):
+    import json
+
+    from bluesky_pabloramesc.actions import ControlConfig
+    from bluesky_pabloramesc.training import control_config_path
+
+    path = tmp_path / "policy"
+    config = ControlConfig(observation_encoding="goal_aligned")
+    control_config_path(path).write_text(json.dumps(config.to_dict()))
+    args = parse_args("ppo", argv=["evaluate", "--model-path", str(path)])
+    assert args.control_config == config
+    with pytest.raises(SystemExit):
+        parse_args(
+            "ppo",
+            argv=[
+                "evaluate",
+                "--model-path",
+                str(path),
+                "--observation-encoding",
+                "ego_cartesian",
+            ],
+        )

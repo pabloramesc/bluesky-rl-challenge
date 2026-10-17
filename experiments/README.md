@@ -1,18 +1,24 @@
 # Experiments
 
-Run from the repository root:
+Run scripts from the repository root with `python -m experiments.<script>`.
+Use `--help` for options.
 
-```bash
-python -m experiments.train_single_ppo --timesteps 100000
-python -m experiments.train_single_ppo replay --episodes 3
-```
+Folders:
 
-- `train_single_*`: single-agent PPO, SAC, TD3, or DDPG.
-- `train_zoo_*`: multi-agent shared-policy PPO or SAC.
-- Modes: `train`, `resume`, `evaluate` (headless), `replay` (visual).
-- `models/`: latest checkpoints and matching normalization statistics.
-- `results/`: preserved per-run checkpoints, scores, logs, and plots.
+- `models/`: latest policies and matching normalization statistics.
+- `results/`: per-run checkpoints, metrics, logs, plots, and comparison reports.
+- Both folders are ignored by Git.
 
-Training ends with headless evaluation. Use `--model-path PATH` to select a
-checkpoint. Parallel runs need separate processes and model paths.
-Both output folders are ignored by Git.
+Scripts:
+
+- `train_single_ppo`, `train_single_sac`, `train_single_td3`, `train_single_ddpg`:
+  single-agent training, with `resume`, `evaluate`, and `replay` modes.
+- `train_zoo_ppo`, `train_zoo_sac`: multi-agent shared-policy training; same modes.
+- `compare_actions`: compare four relative/absolute heading and speed combinations.
+- `compare_observations`: compare upstream, ego Cartesian, and goal-aligned features.
+
+Comparisons default to PPO and one training seed. Multiple seeds require
+`--seeds`; `--output-dir` overrides their default folder under `results/`.
+Use `--resume` to reuse completed comparison runs.
+
+See [RESEARCH.md](../RESEARCH.md) for findings and next experiments.

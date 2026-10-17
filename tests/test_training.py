@@ -653,3 +653,119 @@ def test_interrupt_before_model_initialization_closes_environment(
     report = next((tmp_path / "results").iterdir())
     assert json.loads((report / "run.json").read_text())["status"] == "interrupted"
     assert not (report / "policy.zip").exists()
+
+
+def test_control_settings_survive_every_checkpoint(tmp_path, env_factory):
+    from bluesky_pabloramesc.actions import ControlConfig
+    from bluesky_pabloramesc.training import (
+        load_control_config,
+        validate_control_config,
+    )
+
+    config = ControlConfig(observation_profile="control")
+    builder = partial(build_ppo, n_steps=8, batch_size=4, n_epochs=1, verbose=0)
+    train(
+        builder,
+        env_factory,
+        tmp_path / "policy",
+        8,
+        device="cpu",
+        episodes=1,
+        results_dir=tmp_path / "reports",
+        checkpoint_interval=4,
+        control_config=config,
+    )
+    report = next((tmp_path / "reports").iterdir())
+    for path in [
+        tmp_path / "policy",
+        report / "policy",
+        report / "checkpoints" / "step_8" / "policy",
+    ]:
+        assert load_control_config(path) == config
+        with pytest.raises(ValueError, match="configuration"):
+            validate_control_config(path, ControlConfig())
+
+    def unexpected_env(**kwargs):
+        pytest.fail("configuration mismatch must fail before simulator startup")
+
+    with pytest.raises(ValueError, match="configuration"):
+        replay(PPO, unexpected_env, tmp_path / "policy", control_config=ControlConfig())
+
+
+def test_explicit_scenarios_freeze_statistics_and_pair_resets(env_factory):
+    from bluesky_pabloramesc.training import evaluate_scenarios
+
+    env = VecNormalize(env_factory())
+    try:
+        model = build_ppo(env, device="cpu", verbose=0)
+        count = env.obs_rms.count
+        rows = evaluate_scenarios(model, env, [123, 456])
+        assert [row["scenario_seed"] for row in rows] == [123, 456]
+        assert [row["return"] for row in rows] == [6, 6]
+        assert [row["length"] for row in rows] == [3, 3]
+        assert env.obs_rms.count == count
+        assert env.training and env.norm_reward
+    finally:
+        env.close()
+
+
+def test_scenario_evaluation_preserves_departed_agent_metrics():
+    from bluesky_pabloramesc.training import evaluate_scenarios
+
+    class JointEnv:
+        num_envs = 2
+        training = True
+        norm_reward = True
+
+        def seed(self, seed):
+            self.scenario_seed = seed
+
+        def reset(self):
+            self.steps = 0
+            return np.zeros((2, 1))
+
+        def step(self, actions):
+            self.steps += 1
+            first_info = (
+                {"flight_time": 1, "waypoint_reached": 1} if self.steps == 1 else {}
+            )
+            second_info = {"flight_time": self.steps, "waypoint_reached": 0}
+            return (
+                np.zeros((2, 1)),
+                np.array([2, 3]),
+                np.full(2, self.steps == 3),
+                [first_info, second_info],
+            )
+
+    class Policy:
+        def predict(self, observations, deterministic):
+            assert deterministic
+            return np.zeros((2, 2)), None
+
+    env = JointEnv()
+    first, second = evaluate_scenarios(Policy(), env, [42])
+    assert first["flight_time"] == 1
+    assert first["return"] == 2
+    assert first["length"] == 1
+    assert first["timed_out"] == 0
+    assert second["flight_time"] == 3
+    assert second["return"] == 9
+    assert second["timed_out"] == 1
+    assert env.training and env.norm_reward
+
+
+def test_policy_config_defaults_encoding_for_older_archives():
+    from types import SimpleNamespace
+
+    from bluesky_pabloramesc.actions import ControlConfig
+    from bluesky_pabloramesc.training import validate_policy_config
+
+    config = ControlConfig()
+    saved = config.to_dict()
+    del saved["observation_encoding"]
+    model = SimpleNamespace(control_config=saved)
+    validate_policy_config(model, config)
+    with pytest.raises(ValueError, match="configuration"):
+        validate_policy_config(
+            model, ControlConfig(observation_encoding="goal_aligned")
+        )

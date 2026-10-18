@@ -39,6 +39,7 @@ normalization. Select it with `--architecture entity_mlp`;
 `--pooling pma` for a Set Transformer variant with one learned pooling query.
 
 `--architecture entity_gnn` adds GCN/GAT message passing with configurable depth
-and graph connectivity. Fully connected graphs are the default; distance graphs
-compute binary adjacency before running normalization. All existing pooling
+and graph connectivity. Fully connected graphs are the default; distance and
+k-nearest (`--graph knn --graph-k 3`) graphs compute binary adjacency before
+running normalization. All existing pooling
 methods are supported.

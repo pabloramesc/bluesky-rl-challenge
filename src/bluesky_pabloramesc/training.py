@@ -471,6 +471,8 @@ def train(
                     "graph_radius_nm": extractor.graph_radius_nm,
                 }
             )
+        if isinstance(extractor, EntityGNN) and extractor.graph == "knn":
+            model.architecture_config["graph_k"] = extractor.graph_k
         if getattr(extractor, "pooling", None) == "additive_attention":
             model.architecture_config["attention_context"] = extractor.attention_context
         metadata["architecture_config"] = model.architecture_config

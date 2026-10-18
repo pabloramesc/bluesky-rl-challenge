@@ -446,3 +446,57 @@ def test_gnn_cli_dispatch(graph, monkeypatch):
     assert factory.keywords.get("graph_radius_nm") == (
         10.0 if graph == "distance" else None
     )
+
+
+def test_knn_cli_defaults_restore_and_dispatch(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import Mock
+
+    from bluesky_pabloramesc import cli
+    from bluesky_pabloramesc.training import architecture_config_path
+
+    options = ["--architecture", "entity_gnn", "--graph", "knn"]
+    assert parse_args("ppo", argv=options).graph_k == 3
+    args = parse_args("ppo", argv=[*options, "--graph-k", "5"])
+    assert args.graph_k == 5
+    path = tmp_path / "policy"
+    config = {
+        "architecture": "entity_gnn",
+        "pooling": "mean",
+        "gnn_type": "gcn",
+        "gnn_layers": 2,
+        "graph": "knn",
+        "graph_k": 5,
+        "graph_radius_nm": 25.0,
+    }
+    architecture_config_path(path).write_text(json.dumps(config))
+    restored = parse_args("ppo", argv=["evaluate", "--model-path", str(path)])
+    assert restored.graph == "knn" and restored.graph_k == 5
+    with pytest.raises(SystemExit):
+        parse_args("ppo", argv=["resume", "--model-path", str(path), "--graph-k", "3"])
+    workflow = Mock(return_value=(1.0, 0.0))
+    monkeypatch.setattr(cli, "train", workflow)
+    monkeypatch.setattr("sys.argv", ["trainer", *options, "--graph-k", "5"])
+    cli.run_cli("ppo")
+    builder, factory = workflow.call_args.args[:2]
+    assert builder.keywords["graph_k"] == 5
+    assert factory.keywords["graph_k"] == 5
+    assert "graph_radius_nm" not in factory.keywords
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--graph-k", "3"],
+        ["--architecture", "entity_gnn", "--graph-k", "3"],
+        ["--architecture", "entity_gnn", "--graph", "distance", "--graph-k", "3"],
+        ["--architecture", "entity_gnn", "--graph", "knn", "--graph-radius-nm", "25"],
+        *[
+            ["--architecture", "entity_gnn", "--graph", "knn", "--graph-k", k]
+            for k in ("0", "-1", "1.5")
+        ],
+    ],
+)
+def test_invalid_knn_options(options):
+    with pytest.raises(SystemExit):
+        parse_args("ppo", argv=options)

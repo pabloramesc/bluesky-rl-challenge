@@ -10,7 +10,7 @@ from torch import nn
 POOLING_METHODS = ("mean", "max", "mean_max", "additive_attention", "pma")
 ATTENTION_CONTEXTS = ("ownship_goal", "all")
 GNN_TYPES = ("gcn", "gat")
-GRAPH_TYPES = ("fully_connected", "distance")
+GRAPH_TYPES = ("fully_connected", "distance", "knn")
 
 AIRCRAFT_FIELDS = (
     "intruder_distance",
@@ -301,6 +301,7 @@ class EntityGNN(EntityMLP):
         gnn_layers=1,
         graph="fully_connected",
         graph_radius_nm=25.0,
+        graph_k=3,
     ):
         if gnn_type not in GNN_TYPES:
             raise ValueError(f"Unknown GNN type: {gnn_type}")
@@ -310,14 +311,17 @@ class EntityGNN(EntityMLP):
             raise ValueError("gnn_layers must be a positive integer")
         if not np.isfinite(graph_radius_nm) or graph_radius_nm <= 0:
             raise ValueError("graph_radius_nm must be finite and positive")
+        if type(graph_k) is not int or graph_k <= 0:
+            raise ValueError("graph_k must be a positive integer")
         super().__init__(observation_space, layout, pooling, attention_context)
+        self.graph_k = graph_k
         self.gnn_type, self.gnn_layers = gnn_type, gnn_layers
         self.graph, self.graph_radius_nm = graph, graph_radius_nm
-        if graph == "distance":
+        if graph != "fully_connected":
             nodes = len(layout["aircraft"])
             if len(layout.get("graph_edges", [])) != nodes * nodes:
                 raise ValueError(
-                    "Distance graphs require raw-geometry adjacency observations"
+                    "Sparse graphs require raw-geometry adjacency observations"
                 )
             self.register_buffer(
                 "edge_indices", torch.tensor(layout["graph_edges"], dtype=torch.long)
@@ -328,7 +332,7 @@ class EntityGNN(EntityMLP):
             self.pma = PoolingMultiheadAttention()
 
     def encode_entities(self, entities, present):
-        """Use a fully connected graph unless raw distance edges are supplied."""
+        """Use a fully connected graph unless raw geometry edges are supplied."""
         adjacency = present.unsqueeze(-1) & present.unsqueeze(-2)
         return self.message_passing(entities, present, adjacency)
 
@@ -341,7 +345,7 @@ class EntityGNN(EntityMLP):
     def forward(self, observations):
         if self.graph == "fully_connected":
             return super().forward(observations)
-        # Distance edges bypass normalization and are excluded from policy context.
+        # Sparse graph edges bypass normalization and are excluded from policy context.
         present = observations[:, self.mask_indices] > 0.5
         adjacency = (
             observations[:, self.edge_indices].reshape(

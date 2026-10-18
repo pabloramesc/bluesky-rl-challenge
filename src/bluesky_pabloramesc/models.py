@@ -21,6 +21,7 @@ def architecture_settings(
     gnn_layers=1,
     graph="fully_connected",
     graph_radius_nm=25.0,
+    graph_k=3,
 ):
     """Select the flat baseline or a separately learned actor/critic set encoder."""
     if architecture not in ("mlp", "entity_mlp", "entity_transformer", "entity_gnn"):
@@ -39,6 +40,8 @@ def architecture_settings(
         raise ValueError("gnn_layers must be a positive integer")
     if not np.isfinite(graph_radius_nm) or graph_radius_nm <= 0:
         raise ValueError("graph_radius_nm must be finite and positive")
+    if type(graph_k) is not int or graph_k <= 0:
+        raise ValueError("graph_k must be a positive integer")
     if architecture == "mlp":
         return policy_kwargs
     from .entities import EntityGNN, EntityMLP, EntityTransformer
@@ -59,6 +62,7 @@ def architecture_settings(
                     "gnn_layers": gnn_layers,
                     "graph": graph,
                     "graph_radius_nm": graph_radius_nm,
+                    "graph_k": graph_k,
                 }
                 if architecture == "entity_gnn"
                 else {}
@@ -90,6 +94,7 @@ def build_ppo(
     gnn_layers=1,
     graph="fully_connected",
     graph_radius_nm=25.0,
+    graph_k=3,
     **overrides,
 ):
     """Build PPO with separate 256x256 tanh actor and value networks.
@@ -132,6 +137,7 @@ def build_ppo(
         gnn_layers,
         graph,
         graph_radius_nm,
+        graph_k,
     )
     return PPO("MlpPolicy", env, **settings)
 
@@ -148,6 +154,7 @@ def build_sac(
     gnn_layers=1,
     graph="fully_connected",
     graph_radius_nm=25.0,
+    graph_k=3,
     **overrides,
 ):
     """Build SAC with a 256x256 ReLU actor and twin Q critics.
@@ -192,6 +199,7 @@ def build_sac(
         gnn_layers,
         graph,
         graph_radius_nm,
+        graph_k,
     )
     return SAC("MlpPolicy", env, **settings)
 
@@ -210,6 +218,7 @@ def _build_deterministic(
     gnn_layers,
     graph,
     graph_radius_nm,
+    graph_k,
 ):
     """Build a deterministic actor-critic with shared baseline settings.
 
@@ -257,6 +266,7 @@ def _build_deterministic(
         gnn_layers,
         graph,
         graph_radius_nm,
+        graph_k,
     )
     return model_type("MlpPolicy", env, **settings)
 
@@ -273,6 +283,7 @@ def build_td3(
     gnn_layers=1,
     graph="fully_connected",
     graph_radius_nm=25.0,
+    graph_k=3,
     **overrides,
 ):
     """Build TD3 with 256x256 ReLU networks and Gaussian exploration.
@@ -300,6 +311,7 @@ def build_td3(
         gnn_layers,
         graph,
         graph_radius_nm,
+        graph_k,
     )
 
 
@@ -315,6 +327,7 @@ def build_ddpg(
     gnn_layers=1,
     graph="fully_connected",
     graph_radius_nm=25.0,
+    graph_k=3,
     **overrides,
 ):
     """Build DDPG with 256x256 ReLU networks and Gaussian exploration.
@@ -342,6 +355,7 @@ def build_ddpg(
         gnn_layers,
         graph,
         graph_radius_nm,
+        graph_k,
     )
 
 
@@ -357,6 +371,7 @@ def build_multi_ppo(
     gnn_layers=1,
     graph="fully_connected",
     graph_radius_nm=25.0,
+    graph_k=3,
 ):
     """Build PPO for ten-agent parameter sharing.
 
@@ -407,6 +422,7 @@ def build_multi_ppo(
             gnn_layers,
             graph,
             graph_radius_nm,
+            graph_k,
         ),
         seed=seed,
         verbose=1,
@@ -426,6 +442,7 @@ def build_multi_sac(
     gnn_layers=1,
     graph="fully_connected",
     graph_radius_nm=25.0,
+    graph_k=3,
 ):
     """Build SAC for ten-agent parameter sharing.
 
@@ -478,6 +495,7 @@ def build_multi_sac(
             gnn_layers,
             graph,
             graph_radius_nm,
+            graph_k,
         ),
         seed=seed,
         verbose=1,

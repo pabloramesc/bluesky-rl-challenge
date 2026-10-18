@@ -73,7 +73,7 @@ def test_graph_layer_numerical_examples():
 
 
 @pytest.mark.parametrize("gnn_type", ["gcn", "gat"])
-@pytest.mark.parametrize("graph", ["fully_connected", "distance"])
+@pytest.mark.parametrize("graph", ["fully_connected", "distance", "knn"])
 @pytest.mark.parametrize("layers", [1, 2, 3])
 @pytest.mark.parametrize(
     "pooling,context",
@@ -158,7 +158,8 @@ def test_graph_edges_bypass_normalization():
     [build_ppo, build_sac, build_td3, build_ddpg, build_multi_ppo, build_multi_sac],
 )
 @pytest.mark.parametrize("gnn_type", ["gcn", "gat"])
-def test_gnn_builder_roundtrip(builder, gnn_type, tmp_path):
+@pytest.mark.parametrize("graph", ["distance", "knn"])
+def test_gnn_builder_roundtrip(builder, gnn_type, tmp_path, graph):
     env = EntityVecNormalize(DummyVecEnv([GraphTrafficEnv]))
     try:
         model = builder(
@@ -166,7 +167,8 @@ def test_gnn_builder_roundtrip(builder, gnn_type, tmp_path):
             architecture="entity_gnn",
             gnn_type=gnn_type,
             gnn_layers=2,
-            graph="distance",
+            graph=graph,
+            graph_k=2,
             pooling="pma",
             device="cpu",
         )
@@ -214,7 +216,7 @@ def test_gnn_training(builder, gnn_type):
 
 
 @pytest.mark.parametrize("gnn_type", ["gcn", "gat"])
-@pytest.mark.parametrize("graph", ["fully_connected", "distance"])
+@pytest.mark.parametrize("graph", ["fully_connected", "distance", "knn"])
 def test_gnn_checkpoint_resume_and_evaluate(tmp_path, monkeypatch, gnn_type, graph):
     monkeypatch.setattr(
         GraphTrafficEnv,
@@ -231,6 +233,7 @@ def test_gnn_checkpoint_resume_and_evaluate(tmp_path, monkeypatch, gnn_type, gra
             gnn_layers=2,
             graph=graph,
             graph_radius_nm=10.0,
+            graph_k=2,
             pooling="additive_attention",
             attention_context="all",
             n_steps=4,
@@ -251,6 +254,7 @@ def test_gnn_checkpoint_resume_and_evaluate(tmp_path, monkeypatch, gnn_type, gra
         "gnn_layers": 2,
         "graph": graph,
         "graph_radius_nm": 10.0,
+        **({"graph_k": 2} if graph == "knn" else {}),
         "pooling": "additive_attention",
         "attention_context": "all",
     }
@@ -284,7 +288,8 @@ def test_gnn_checkpoint_resume_and_evaluate(tmp_path, monkeypatch, gnn_type, gra
         "goal_aligned_conflict",
     ],
 )
-def test_distance_graph_hooks_and_observation_layout(encoding):
+@pytest.mark.parametrize("graph", ["distance", "knn"])
+def test_distance_graph_hooks_and_observation_layout(encoding, graph):
     from types import SimpleNamespace
 
     from test_observations import geometry
@@ -310,14 +315,19 @@ def test_distance_graph_hooks_and_observation_layout(encoding):
 
     class ControlledObservation(ControlHooks, BaseObservation):
         entity_observations = True
-        graph_radius_nm = 2.0
+        graph_radius_nm = 2.0 if graph == "distance" else None
+        graph_k = 1 if graph == "knn" else None
         intruder_obs = SimpleNamespace(pos_norm=1_000_000, spd_norm=150)
         control_config = ControlConfig(observation_encoding=encoding)
 
     env = ControlledObservation()
     obs = env._get_obs("agent")
     space = extend_observation_space(
-        structured, env.control_config, True, graph_radius_nm=2.0
+        structured,
+        env.control_config,
+        True,
+        graph_radius_nm=env.graph_radius_nm,
+        graph_k=env.graph_k,
     )
     assert space.contains(obs)
     np.testing.assert_array_equal(obs["graph_adjacency"], np.ones((2, 2)))
@@ -343,3 +353,59 @@ def test_distance_graph_connectivity_changes_messages(gnn_type):
     disconnected = obs.clone()
     disconnected[:, layout["graph_edges"]] = torch.eye(3).reshape(1, 9)
     assert not torch.allclose(model(obs), model(disconnected))
+
+
+def knn_observation(x, present=None):
+    return {
+        "x_r": np.array(x, dtype=float),
+        "y_r": np.zeros(len(x)),
+        "intruder_present": np.ones(len(x)) if present is None else np.array(present),
+    }
+
+
+def test_knn_neighbors_are_bidirectional_without_radius():
+    from bluesky_pabloramesc.observations import knn_adjacency
+
+    obs = knn_observation([0, 1, 3, 10, 0], [1, 1, 1, 1, 0])
+    expected = [
+        [1, 1, 0, 0, 0],
+        [1, 1, 1, 0, 0],
+        [0, 1, 1, 1, 0],
+        [0, 0, 1, 1, 0],
+        [0, 0, 0, 0, 0],
+    ]
+    np.testing.assert_array_equal(knn_adjacency(obs, 1, 1), expected)
+    np.testing.assert_array_equal(knn_adjacency(obs, 1_000_000, 1), expected)
+
+
+def test_knn_ties_coincidence_and_permutation_invariance():
+    from bluesky_pabloramesc.observations import knn_adjacency
+
+    obs = knn_observation([0, 1, -1, 0], [1, 1, 1, 0])
+    expected = np.array([[1, 1, 1, 0], [1, 1, 0, 0], [1, 0, 1, 0], [0, 0, 0, 0]])
+    np.testing.assert_array_equal(knn_adjacency(obs, 1, 1), expected)
+    permutation = [2, 3, 0, 1]
+    permuted = {key: value[permutation] for key, value in obs.items()}
+    np.testing.assert_array_equal(
+        knn_adjacency(permuted, 1, 1), expected[permutation][:, permutation]
+    )
+    coincident = knn_observation([0, 0, 0, 0], [1, 1, 1, 0])
+    np.testing.assert_array_equal(
+        knn_adjacency(coincident, 1, 1), np.outer([1, 1, 1, 0], [1, 1, 1, 0])
+    )
+
+
+@pytest.mark.parametrize("present", [[], [0], [1], [0, 0, 0], [0, 1, 0], [1, 1, 0]])
+def test_knn_small_traffic_and_large_k(present):
+    from bluesky_pabloramesc.observations import knn_adjacency
+
+    obs = knn_observation(range(len(present)), present)
+    np.testing.assert_array_equal(knn_adjacency(obs, 1, 20), np.outer(present, present))
+
+
+@pytest.mark.parametrize("k", [0, -1, 1.5, True])
+def test_knn_rejects_invalid_k(k):
+    from bluesky_pabloramesc.observations import knn_adjacency
+
+    with pytest.raises(ValueError, match="positive integer"):
+        knn_adjacency(knn_observation([0, 1]), 1, k)

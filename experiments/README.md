@@ -241,3 +241,22 @@ require `entity_gnn`; an explicit radius requires `--graph distance`. All existi
 single-agent algorithms and parameter-shared PPO/SAC support these options.
 Existing MLP/Transformer checkpoints remain compatible. Graph ablation runs have
 not been performed yet.
+
+For radius-free sparse graphs, select `--graph knn --graph-k 3` (`k=3` is the
+default for this option). Each occupied aircraft selects its k nearest other
+aircraft, and an undirected edge is kept if either endpoint selects the other.
+All aircraft tied at the kth distance are included; no aircraft-slot order is
+used to break ties. Consequently, ties and bidirectional edges can give a node
+more than k neighbors. Self-connections are added separately and do not count
+toward k. With fewer than k other aircraft, all available neighbors are used.
+Padding is excluded, and empty traffic remains supported.
+
+```bash
+python experiments/train_single_ppo.py --architecture entity_gnn --gnn-type gat --graph knn --graph-k 3 --model-path experiments/models/ppo_gat_knn3
+```
+
+K-nearest edges use geometry before running normalization and share the binary
+adjacency path used by distance graphs. The selected k is saved in checkpoints
+and automatically restored for resume, evaluation, and replay. `--graph-k` is
+only valid with `--graph knn`; a radius cannot be combined with this graph option.
+Fully connected remains the default graph, and older checkpoints remain supported.

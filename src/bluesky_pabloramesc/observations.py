@@ -110,7 +110,7 @@ def encode_geometry(observation, encoding, pos_norm=1_000_000, spd_norm=150):
 
 
 def extend_observation_space(
-    space, config, entity_observations=False, graph_radius_nm=None
+    space, config, entity_observations=False, graph_radius_nm=None, graph_k=None
 ):
     """Append ownship state before flattening, preserving legacy spaces exactly."""
     if (
@@ -138,7 +138,7 @@ def extend_observation_space(
         fields["intruder_present"] = spaces.Box(
             0, 1, shape=fields["x_r"].shape, dtype=np.float64
         )
-    if graph_radius_nm is not None:
+    if graph_radius_nm is not None or graph_k is not None:
         nodes = fields["x_r"].shape[0]
         fields["graph_adjacency"] = spaces.Box(
             0, 1, shape=(nodes, nodes), dtype=np.float64
@@ -154,6 +154,24 @@ def distance_adjacency(observation, pos_norm, radius_nm):
     return (
         (distances <= radius_nm * 1852) & present[:, None] & present[None, :]
     ).astype(np.float64)
+
+
+def knn_adjacency(observation, pos_norm, k):
+    """Symmetric k-nearest graph, with all kth-distance ties and self-loops."""
+    if type(k) is not int or k <= 0:
+        raise ValueError("k must be a positive integer")
+    positions = np.stack([observation["x_r"], observation["y_r"]], axis=-1) * pos_norm
+    present = observation["intruder_present"] > 0.5
+    valid = present[:, None] & present[None, :]
+    diagonal = np.eye(len(present), dtype=bool)
+    if len(present) < 2:
+        return valid.astype(np.float64)
+    distances = np.linalg.norm(positions[:, None] - positions[None, :], axis=-1)
+    candidates = np.where(valid & ~diagonal, distances, np.inf)
+    rank = min(k, len(present) - 1) - 1
+    cutoffs = np.partition(candidates, rank, axis=1)[:, rank]
+    neighbors = (candidates <= cutoffs[:, None]) & valid & ~diagonal
+    return ((neighbors | neighbors.T | diagonal) & valid).astype(np.float64)
 
 
 def ownship_features(heading, cas_knots):
@@ -196,6 +214,11 @@ class ControlHooks:
         if radius is not None:
             observation["graph_adjacency"] = distance_adjacency(
                 observation, self.intruder_obs.pos_norm, radius
+            )
+        k = getattr(self, "graph_k", None)
+        if k is not None:
+            observation["graph_adjacency"] = knn_adjacency(
+                observation, self.intruder_obs.pos_norm, k
             )
         return observation
 

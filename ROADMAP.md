@@ -26,7 +26,7 @@ Progress from reproducible baselines to advanced, safety-aware multi-agent contr
 - [x] Shared entity MLP + mean/max pooling — `--architecture entity_mlp --pooling mean|max|mean_max`
 - [x] Additive attention — `--architecture entity_mlp --pooling additive_attention --attention-context ownship_goal|all`
 - [x] Transformer / Set Transformer — `--architecture entity_transformer --transformer-layers N --pooling mean|max|mean_max|additive_attention|pma`
-- [x] Graph Neural Network (GCN / GAT) — `--architecture entity_gnn --gnn-type gcn|gat --graph fully_connected|distance`
+- [x] Graph Neural Network (GCN / GAT) — `--architecture entity_gnn --gnn-type gcn|gat --graph fully_connected|distance|knn`
 - [ ] Temporal modeling (frame stacking, LSTM, GRU, vs TCN)
 - [ ] Compare architectures using the best single-agent algorithm
 

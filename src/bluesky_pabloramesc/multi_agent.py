@@ -171,6 +171,7 @@ def make_vec_env(
     control_config=None,
     entity_observations=False,
     graph_radius_nm=None,
+    graph_k=None,
 ):
     """Create ten monitored agent slots backed by one BlueSky simulator.
 
@@ -190,8 +191,15 @@ def make_vec_env(
 
     class ControlledCompetitionZooEnv(ControlHooks, CompetitionZooEnv):
         def __init__(self):
-            if graph_radius_nm is not None and not entity_observations:
+            if graph_radius_nm is not None and graph_k is not None:
+                raise ValueError(
+                    "Select either a distance radius or k-nearest neighbors"
+                )
+            if (
+                graph_radius_nm is not None or graph_k is not None
+            ) and not entity_observations:
                 raise ValueError("Graph observations require entity_observations=True")
+            self.graph_k = graph_k
             self.graph_radius_nm = graph_radius_nm
             self.entity_observations = entity_observations
             self.control_config = control_config or ControlConfig()
@@ -201,6 +209,7 @@ def make_vec_env(
                     space,
                     self.control_config,
                     entity_observations,
+                    **({"graph_k": graph_k} if graph_k is not None else {}),
                     **(
                         {"graph_radius_nm": graph_radius_nm}
                         if graph_radius_nm is not None

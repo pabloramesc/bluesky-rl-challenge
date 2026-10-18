@@ -85,6 +85,7 @@ def parse_args(algorithm, multi_agent=False, argv=None):
     parser.add_argument("--gnn-layers", type=positive_int)
     parser.add_argument("--graph", choices=GRAPH_TYPES)
     parser.add_argument("--graph-radius-nm", type=float)
+    parser.add_argument("--graph-k", type=positive_int)
     suffix = "marl_competition" if multi_agent else "single_mlp"
     parser.add_argument(
         "--model-path",
@@ -165,6 +166,7 @@ def parse_args(algorithm, multi_agent=False, argv=None):
         "gnn_layers": 1,
         "graph": "fully_connected",
         "graph_radius_nm": 25.0,
+        "graph_k": 3,
     }
     requested_architecture = parsed.architecture or saved_architecture["architecture"]
     for key, default in gnn_defaults.items():
@@ -176,6 +178,8 @@ def parse_args(algorithm, multi_agent=False, argv=None):
     requested_graph = parsed.graph or saved_architecture["graph"]
     if parsed.graph_radius_nm is not None and requested_graph != "distance":
         parser.error("--graph-radius-nm requires --graph distance")
+    if parsed.graph_k is not None and requested_graph != "knn":
+        parser.error("--graph-k requires --graph knn")
     radius = (
         parsed.graph_radius_nm
         if parsed.graph_radius_nm is not None
@@ -288,6 +292,8 @@ def run_cli(algorithm, multi_agent=False):
         env_factory = partial(env_factory, entity_observations=True)
         if args.architecture == "entity_gnn" and args.graph == "distance":
             env_factory = partial(env_factory, graph_radius_nm=args.graph_radius_nm)
+        if args.architecture == "entity_gnn" and args.graph == "knn":
+            env_factory = partial(env_factory, graph_k=args.graph_k)
         builder = partial(
             builder,
             architecture=args.architecture,
@@ -300,6 +306,7 @@ def run_cli(algorithm, multi_agent=False):
                     "gnn_layers": args.gnn_layers,
                     "graph": args.graph,
                     "graph_radius_nm": args.graph_radius_nm,
+                    "graph_k": args.graph_k,
                 }
                 if args.architecture == "entity_gnn"
                 else {}

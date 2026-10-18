@@ -43,3 +43,7 @@ and graph connectivity. Fully connected graphs are the default; distance and
 k-nearest (`--graph knn --graph-k 3`) graphs compute binary adjacency before
 running normalization. All existing pooling
 methods are supported.
+
+`temporal.py` provides per-agent raw history windows, shared temporal normalization,
+and frame-stack/GRU/LSTM/causal-TCN encoders. Use `--temporal` independently of
+`--architecture`; `--history-length` defaults to 8 for temporal modes.

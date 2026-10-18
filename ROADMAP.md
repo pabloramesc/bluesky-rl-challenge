@@ -14,10 +14,7 @@ Progress from reproducible baselines to advanced, safety-aware multi-agent contr
 - [x] Implement and compare relative/absolute heading/speed actions — initial comparison complete; relative heading/absolute speed preferred
 - [x] Compare 5/10/20-second decision intervals — retain default 10 seconds; initial single-seed comparison complete, validate across seeds
 - [x] Compare custom ego-centric/goal-relative features against the upstream baseline — initial single-seed comparison complete; validate across seeds
-- [ ] Validate observation ranking across training seeds with the selected action settings
-- [x] Add TCPA, DCPA, closing rate, and presence mask (`conflict` observation encoding)
-- [x] Compare conflict features with existing relative-bearing features — initial single-seed comparison complete; no robust observation winner
-- [ ] Compare goal-aligned vs goal-aligned + conflict features with relative heading/absolute speed and the control profile
+- [x] Add TCPA, DCPA, closing rate, and presence mask (`conflict` observation encoding). Compare with existing relative-bearing features — initial single-seed comparison complete; no robust observation winner
 - [ ] Improve obstacle/sector geometry (nearest edge, ray casting)
 - [ ] Compare raw vs engineered features
 
@@ -27,7 +24,8 @@ Progress from reproducible baselines to advanced, safety-aware multi-agent contr
 - [x] Additive attention — `--architecture entity_mlp --pooling additive_attention --attention-context ownship_goal|all`
 - [x] Transformer / Set Transformer — `--architecture entity_transformer --transformer-layers N --pooling mean|max|mean_max|additive_attention|pma`
 - [x] Graph Neural Network (GCN / GAT) — `--architecture entity_gnn --gnn-type gcn|gat --graph fully_connected|distance|knn`
-- [ ] Temporal modeling (frame stacking, LSTM, GRU, vs TCN)
+- [x] Fixed-window temporal modeling — `--temporal frame_stack|gru|lstm|tcn --history-length N`
+- [ ] Stateful recurrent policies with sequence-aware training
 - [ ] Compare architectures using the best single-agent algorithm
 
 ## 4. Reward engineering

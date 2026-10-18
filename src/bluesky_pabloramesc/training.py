@@ -412,9 +412,12 @@ def train(
         if resume_from is None:
             interval = control_config.decision_interval if control_config else 10
             from .entities import EntityVecNormalize
+            from .temporal import HistoryVecNormalize
 
             normalizer = (
-                EntityVecNormalize
+                HistoryVecNormalize
+                if hasattr(env.observation_space, "temporal_frame_space")
+                else EntityVecNormalize
                 if hasattr(env.observation_space, "entity_layout")
                 else VecNormalize
             )
@@ -452,6 +455,13 @@ def train(
         extractor = model.policy.features_extractor
         if extractor is None:
             extractor = model.policy.actor.features_extractor
+        from .temporal import TemporalFeatures
+
+        temporal_extractor = (
+            extractor if isinstance(extractor, TemporalFeatures) else None
+        )
+        if temporal_extractor is not None:
+            extractor = temporal_extractor.frame_encoder
         model.architecture_config = {
             "architecture": "entity_mlp" if isinstance(extractor, EntityMLP) else "mlp",
             "pooling": getattr(extractor, "pooling", "mean_max"),
@@ -475,6 +485,13 @@ def train(
             model.architecture_config["graph_k"] = extractor.graph_k
         if getattr(extractor, "pooling", None) == "additive_attention":
             model.architecture_config["attention_context"] = extractor.attention_context
+        if temporal_extractor is not None:
+            model.architecture_config.update(
+                {
+                    "temporal": temporal_extractor.temporal,
+                    "history_length": temporal_extractor.history_length,
+                }
+            )
         metadata["architecture_config"] = model.architecture_config
         initial_timesteps = model.num_timesteps
         metadata["initial_timesteps"] = initial_timesteps

@@ -22,6 +22,8 @@ def architecture_settings(
     graph="fully_connected",
     graph_radius_nm=25.0,
     graph_k=3,
+    temporal="none",
+    history_length=8,
 ):
     """Select the flat baseline or a separately learned actor/critic set encoder."""
     if architecture not in ("mlp", "entity_mlp", "entity_transformer", "entity_gnn"):
@@ -42,19 +44,34 @@ def architecture_settings(
         raise ValueError("graph_radius_nm must be finite and positive")
     if type(graph_k) is not int or graph_k <= 0:
         raise ValueError("graph_k must be a positive integer")
-    if architecture == "mlp":
+    from stable_baselines3.common.torch_layers import FlattenExtractor
+
+    from .temporal import TEMPORAL_METHODS, TemporalFeatures
+
+    if temporal not in TEMPORAL_METHODS:
+        raise ValueError(f"Unknown temporal encoder: {temporal}")
+    if type(history_length) is not int or history_length <= 0:
+        raise ValueError("history_length must be a positive integer")
+    if temporal == "none" and hasattr(env.observation_space, "temporal_frame_space"):
+        raise ValueError("HistoryWindow requires a temporal encoder")
+    if architecture == "mlp" and temporal == "none":
         return policy_kwargs
     from .entities import EntityGNN, EntityMLP, EntityTransformer
 
-    return {
+    settings = {
         **policy_kwargs,
         "features_extractor_class": {
+            "mlp": FlattenExtractor,
             "entity_mlp": EntityMLP,
             "entity_transformer": EntityTransformer,
             "entity_gnn": EntityGNN,
         }[architecture],
         "features_extractor_kwargs": {
-            "layout": env.observation_space.entity_layout,
+            **(
+                {"layout": env.observation_space.entity_layout}
+                if architecture != "mlp"
+                else {}
+            ),
             "pooling": pooling,
             **(
                 {
@@ -80,6 +97,21 @@ def architecture_settings(
         },
         "share_features_extractor": False,
     }
+    if architecture == "mlp":
+        settings["features_extractor_kwargs"] = {}
+    if temporal != "none":
+        frame_space = getattr(env.observation_space, "temporal_frame_space", None)
+        if frame_space is None:
+            raise ValueError("Temporal policies require a HistoryWindow environment")
+        settings["features_extractor_kwargs"] = {
+            "frame_space": frame_space,
+            "frame_encoder_class": settings["features_extractor_class"],
+            "frame_encoder_kwargs": settings["features_extractor_kwargs"],
+            "temporal": temporal,
+            "history_length": history_length,
+        }
+        settings["features_extractor_class"] = TemporalFeatures
+    return settings
 
 
 def build_ppo(
@@ -95,6 +127,8 @@ def build_ppo(
     graph="fully_connected",
     graph_radius_nm=25.0,
     graph_k=3,
+    temporal="none",
+    history_length=8,
     **overrides,
 ):
     """Build PPO with separate 256x256 tanh actor and value networks.
@@ -138,6 +172,8 @@ def build_ppo(
         graph,
         graph_radius_nm,
         graph_k,
+        temporal,
+        history_length,
     )
     return PPO("MlpPolicy", env, **settings)
 
@@ -155,6 +191,8 @@ def build_sac(
     graph="fully_connected",
     graph_radius_nm=25.0,
     graph_k=3,
+    temporal="none",
+    history_length=8,
     **overrides,
 ):
     """Build SAC with a 256x256 ReLU actor and twin Q critics.
@@ -200,6 +238,8 @@ def build_sac(
         graph,
         graph_radius_nm,
         graph_k,
+        temporal,
+        history_length,
     )
     return SAC("MlpPolicy", env, **settings)
 
@@ -219,6 +259,8 @@ def _build_deterministic(
     graph,
     graph_radius_nm,
     graph_k,
+    temporal,
+    history_length,
 ):
     """Build a deterministic actor-critic with shared baseline settings.
 
@@ -267,6 +309,8 @@ def _build_deterministic(
         graph,
         graph_radius_nm,
         graph_k,
+        temporal,
+        history_length,
     )
     return model_type("MlpPolicy", env, **settings)
 
@@ -284,6 +328,8 @@ def build_td3(
     graph="fully_connected",
     graph_radius_nm=25.0,
     graph_k=3,
+    temporal="none",
+    history_length=8,
     **overrides,
 ):
     """Build TD3 with 256x256 ReLU networks and Gaussian exploration.
@@ -312,6 +358,8 @@ def build_td3(
         graph,
         graph_radius_nm,
         graph_k,
+        temporal,
+        history_length,
     )
 
 
@@ -328,6 +376,8 @@ def build_ddpg(
     graph="fully_connected",
     graph_radius_nm=25.0,
     graph_k=3,
+    temporal="none",
+    history_length=8,
     **overrides,
 ):
     """Build DDPG with 256x256 ReLU networks and Gaussian exploration.
@@ -356,6 +406,8 @@ def build_ddpg(
         graph,
         graph_radius_nm,
         graph_k,
+        temporal,
+        history_length,
     )
 
 
@@ -372,6 +424,8 @@ def build_multi_ppo(
     graph="fully_connected",
     graph_radius_nm=25.0,
     graph_k=3,
+    temporal="none",
+    history_length=8,
 ):
     """Build PPO for ten-agent parameter sharing.
 
@@ -423,6 +477,8 @@ def build_multi_ppo(
             graph,
             graph_radius_nm,
             graph_k,
+            temporal,
+            history_length,
         ),
         seed=seed,
         verbose=1,
@@ -443,6 +499,8 @@ def build_multi_sac(
     graph="fully_connected",
     graph_radius_nm=25.0,
     graph_k=3,
+    temporal="none",
+    history_length=8,
 ):
     """Build SAC for ten-agent parameter sharing.
 
@@ -496,6 +554,8 @@ def build_multi_sac(
             graph,
             graph_radius_nm,
             graph_k,
+            temporal,
+            history_length,
         ),
         seed=seed,
         verbose=1,

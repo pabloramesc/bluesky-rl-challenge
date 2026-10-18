@@ -500,3 +500,59 @@ def test_knn_cli_defaults_restore_and_dispatch(tmp_path, monkeypatch):
 def test_invalid_knn_options(options):
     with pytest.raises(SystemExit):
         parse_args("ppo", argv=options)
+
+
+@pytest.mark.parametrize("temporal", ["frame_stack", "gru", "lstm", "tcn"])
+def test_temporal_cli_restore_and_dispatch(tmp_path, monkeypatch, temporal):
+    import json
+    from unittest.mock import Mock
+
+    from bluesky_pabloramesc import cli
+    from bluesky_pabloramesc.training import architecture_config_path
+
+    assert parse_args("ppo", argv=[]).temporal == "none"
+    assert parse_args("ppo", argv=["--temporal", temporal]).history_length == 8
+    path = tmp_path / "policy"
+    architecture_config_path(path).write_text(
+        json.dumps(
+            {
+                "architecture": "entity_mlp",
+                "pooling": "mean",
+                "temporal": temporal,
+                "history_length": 4,
+            }
+        )
+    )
+    restored = parse_args("ppo", argv=["evaluate", "--model-path", str(path)])
+    assert restored.temporal == temporal and restored.history_length == 4
+    with pytest.raises(SystemExit):
+        parse_args(
+            "ppo", argv=["resume", "--model-path", str(path), "--history-length", "8"]
+        )
+    with pytest.raises(SystemExit):
+        parse_args(
+            "ppo", argv=["evaluate", "--model-path", str(path), "--temporal", "none"]
+        )
+    workflow = Mock(return_value=(1.0, 0.0))
+    monkeypatch.setattr(cli, "train", workflow)
+    monkeypatch.setattr(
+        "sys.argv", ["trainer", "--temporal", temporal, "--history-length", "4"]
+    )
+    cli.run_cli("ppo")
+    builder, factory = workflow.call_args.args[:2]
+    assert builder.keywords["temporal"] == temporal
+    assert factory.keywords["history_length"] == 4
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--history-length", "4"],
+        ["--temporal", "none", "--history-length", "4"],
+        ["--temporal", "gru", "--history-length", "0"],
+        ["--temporal", "lstm", "--history-length", "-1"],
+    ],
+)
+def test_invalid_temporal_options(options):
+    with pytest.raises(SystemExit):
+        parse_args("ppo", argv=options)

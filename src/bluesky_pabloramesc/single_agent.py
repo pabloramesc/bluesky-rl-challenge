@@ -11,6 +11,7 @@ def make_env(
     entity_observations=False,
     graph_radius_nm=None,
     graph_k=None,
+    history_length=None,
 ):
     """Create a monitored single-aircraft environment with flat observations.
 
@@ -77,4 +78,9 @@ def make_env(
         from .entities import entity_layout
 
         flat.observation_space.entity_layout = entity_layout(env.observation_space)
-    return DummyVecEnv([lambda: Monitor(flat)])
+    env = DummyVecEnv([lambda: Monitor(flat)])
+    if history_length is not None:
+        from .temporal import HistoryWindow
+
+        env = HistoryWindow(env, history_length)
+    return env

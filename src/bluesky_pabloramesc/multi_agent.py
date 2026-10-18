@@ -90,6 +90,10 @@ class JointEpisodeBlackDeath(BaseParallelWrapper):
     are mutually exclusive in this environment.
     """
 
+    def __init__(self, env, track_history=False):
+        super().__init__(env)
+        self.track_history = track_history
+
     def reset(self, seed=None, options=None):
         """Reset the environment and restore all possible agent slots.
 
@@ -123,6 +127,10 @@ class JointEpisodeBlackDeath(BaseParallelWrapper):
                 observations[agent] = np.zeros(space.shape, dtype=space.dtype)
                 rewards[agent] = 0.0
                 infos[agent] = {}
+
+        if self.track_history:
+            for agent in self.possible_agents:
+                infos[agent]["_temporal_inactive"] = agent not in self.env.agents
 
         terminations = {agent: joint_done for agent in self.possible_agents}
         truncations = {agent: False for agent in self.possible_agents}
@@ -172,6 +180,7 @@ def make_vec_env(
     entity_observations=False,
     graph_radius_nm=None,
     graph_k=None,
+    history_length=None,
 ):
     """Create ten monitored agent slots backed by one BlueSky simulator.
 
@@ -225,10 +234,14 @@ def make_vec_env(
 
         layout = entity_layout(env.observation_space(env.possible_agents[0]))
     env = FlattenObs(env)
-    env = JointEpisodeBlackDeath(env)
+    env = JointEpisodeBlackDeath(env, track_history=history_length is not None)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = SeedableSB3VecEnvWrapper(env)
     env = VecMonitor(env)
     if entity_observations:
         env.observation_space.entity_layout = layout
+    if history_length is not None:
+        from .temporal import HistoryWindow
+
+        env = HistoryWindow(env, history_length)
     return env

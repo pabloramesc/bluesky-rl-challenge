@@ -260,3 +260,47 @@ adjacency path used by distance graphs. The selected k is saved in checkpoints
 and automatically restored for resume, evaluation, and replay. `--graph-k` is
 only valid with `--graph knn`; a radius cannot be combined with this graph option.
 Fully connected remains the default graph, and older checkpoints remain supported.
+
+### Temporal modeling
+
+Temporal processing is independent of the spatial architecture:
+`--temporal none` (default), `frame_stack`, `gru`, `lstm`, or `tcn`.
+`--history-length N` selects a positive number of observations (default 8 when
+using a temporal encoder). Each frame passes through the spatial encoder first:
+flat features for `mlp`, or the pooled aircraft/context representation for entity
+MLP, Transformer, or GNN encoders. Entity pooling therefore preserves aircraft
+permutation invariance independently at each time step.
+
+```bash
+python experiments/train_single_ppo.py --temporal frame_stack --history-length 8 --model-path experiments/models/ppo_stack8
+python experiments/train_single_ppo.py --architecture entity_mlp --pooling mean --temporal gru --history-length 8 --model-path experiments/models/ppo_entity_gru8
+python experiments/train_single_sac.py --architecture entity_transformer --pooling pma --temporal lstm --history-length 8 --model-path experiments/models/sac_transformer_lstm8
+python experiments/train_zoo_ppo.py --architecture entity_gnn --graph knn --graph-k 3 --temporal tcn --history-length 8 --model-path experiments/models/shared_gat_tcn8
+```
+
+Frame stacking concatenates encoded frames and validity flags. GRU/LSTM use one
+64-unit recurrent layer, starting from zero hidden state for every window. They
+are fixed-window sequence encoders, with backpropagation through that window;
+no hidden state is carried between prediction calls. TCN uses 64 channels and
+causal, kernel-3 convolutions with doubling dilations until the receptive field
+covers the window (dilations 1/2/4 for length 8), returning the latest output.
+Actor and critic have separate spatial and temporal encoders. All existing
+algorithms support these modes; stateful recurrent RL is a separate future task.
+
+Windows contain oldest-to-newest raw observations and a binary validity column.
+Before sufficient history is available, missing frames are masked zero padding.
+GRU/LSTM skip invalid frames; TCN masks invalid positions between layers.
+History clears on episode reset and for departed aircraft in shared-policy runs.
+Terminal observations retain the final window for replay and time-limit
+bootstrapping. Past observations never cross episode or agent boundaries.
+
+Normalization statistics are shared across time, updated once per latest valid
+frame, and saved alongside the policy. Aircraft statistics remain shared across
+occupied slots; presence, graph edges, and frame-validity flags bypass
+normalization. Replay buffers store complete raw windows, so off-policy training
+reconstructs temporal inputs with current normalization rather than cached latent
+vectors. Evaluation freezes statistics. Checkpoints restore temporal mode and
+history length automatically and reject conflicting CLI overrides. Resuming
+training starts new simulator episodes with fresh histories and restores saved
+replay windows when available. Older non-temporal checkpoints remain supported.
+Temporal ablation runs have not been performed yet.

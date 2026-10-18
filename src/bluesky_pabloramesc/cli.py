@@ -52,7 +52,7 @@ def parse_args(algorithm, multi_agent=False, argv=None):
         SystemExit: Help is requested or arguments are invalid.
     """
     parser = argparse.ArgumentParser(
-        description=f"Train or replay a {algorithm.upper()} MLP"
+        description=f"Train or replay a {algorithm.upper()} policy"
     )
     parser.add_argument(
         "mode",
@@ -86,6 +86,10 @@ def parse_args(algorithm, multi_agent=False, argv=None):
     parser.add_argument("--graph", choices=GRAPH_TYPES)
     parser.add_argument("--graph-radius-nm", type=float)
     parser.add_argument("--graph-k", type=positive_int)
+    from .temporal import TEMPORAL_METHODS
+
+    parser.add_argument("--temporal", choices=TEMPORAL_METHODS)
+    parser.add_argument("--history-length", type=positive_int)
     suffix = "marl_competition" if multi_agent else "single_mlp"
     parser.add_argument(
         "--model-path",
@@ -187,12 +191,21 @@ def parse_args(algorithm, multi_agent=False, argv=None):
     )
     if not math.isfinite(radius) or radius <= 0:
         parser.error("--graph-radius-nm must be finite and positive")
+    saved_architecture.setdefault("temporal", "none")
+    saved_architecture.setdefault("history_length", 8)
+    if (
+        parsed.history_length is not None
+        and (parsed.temporal or saved_architecture["temporal"]) == "none"
+    ):
+        parser.error("--history-length requires a temporal encoder")
     saved_architecture.setdefault("transformer_layers", 1)
     for key in (
         "architecture",
         "pooling",
         "attention_context",
         "transformer_layers",
+        "temporal",
+        "history_length",
         *gnn_defaults,
     ):
         value = getattr(parsed, key)
@@ -311,6 +324,12 @@ def run_cli(algorithm, multi_agent=False):
                 if args.architecture == "entity_gnn"
                 else {}
             ),
+        )
+
+    if args.temporal != "none":
+        env_factory = partial(env_factory, history_length=args.history_length)
+        builder = partial(
+            builder, temporal=args.temporal, history_length=args.history_length
         )
 
     model_type = {"ppo": PPO, "sac": SAC, "td3": TD3, "ddpg": DDPG}[algorithm]

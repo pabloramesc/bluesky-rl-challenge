@@ -90,6 +90,11 @@ Resume it with the same algorithm's `resume` command.
 See the [action comparison](experiments/README.md)
 for relative/absolute heading and speed experiments.
 
+Use `python -m experiments.compare_architectures --dry-run` to preview an
+architecture comparison tree. The [architecture comparison guide](experiments/README.md#architecture-comparisons)
+covers conditional options, bounded parallel jobs, temporal sweeps, and combined
+CSV/table/plot reports.
+
 See [experiments/README.md](experiments/README.md) for training details.
 Generated checkpoints and results are kept under `experiments/models/` and
 `experiments/results/`, ignored by Git. Each training run saves a unique report

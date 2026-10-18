@@ -1,0 +1,32 @@
+{
+  "name": "architectures",
+  "children": [
+    {
+      "name": "mlp",
+      "settings": {"architecture": "mlp"}
+    },
+    {
+      "name": "entity_mlp",
+      "settings": {"architecture": "entity_mlp"},
+      "sweep": {"pooling": ["mean", "mean_max"]}
+    },
+    {
+      "name": "transformer",
+      "settings": {"architecture": "entity_transformer"},
+      "sweep": {"transformer_layers": [1, 2], "pooling": ["mean", "pma"]}
+    },
+    {
+      "name": "gnn",
+      "settings": {"architecture": "entity_gnn", "pooling": "mean"},
+      "sweep": {"gnn_type": ["gcn", "gat"]},
+      "children": [
+        {"name": "full", "settings": {"graph": "fully_connected"}},
+        {
+          "name": "knn",
+          "settings": {"graph": "knn"},
+          "sweep": {"graph_k": [1, 3]}
+        }
+      ]
+    }
+  ]
+}

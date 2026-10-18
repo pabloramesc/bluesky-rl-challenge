@@ -474,3 +474,108 @@ def run_comparison_cli(argv=None, *, observation=False, frequency=False):
             run_comparison(args, observation=observation)
     except ValueError as error:
         parser.error(str(error))
+
+
+def run_architecture_comparison_cli(argv=None):
+    """Parse the architecture tree, resource budget, and matched evaluation protocol."""
+    from .architecture_comparison import run_architecture_comparison
+    from .observations import OBSERVATION_ENCODINGS
+    from .temporal import TEMPORAL_METHODS
+
+    parser = argparse.ArgumentParser(
+        description="Compare architecture-tree leaves in bounded, isolated training subprocesses"
+    )
+    parser.add_argument(
+        "--tree",
+        type=Path,
+        help="JSON tree; otherwise compare all spatial/pooling variants with default depths and fully connected graphs",
+    )
+    parser.add_argument(
+        "--temporal",
+        nargs="+",
+        choices=TEMPORAL_METHODS,
+        help="temporal methods crossed with the default spatial tree (default: none)",
+    )
+    parser.add_argument(
+        "--history-lengths",
+        nargs="+",
+        type=positive_int,
+        help="history lengths for temporal variants (default: 8)",
+    )
+    parser.add_argument(
+        "--algorithm", choices=["ppo", "sac", "td3", "ddpg"], default="ppo"
+    )
+    parser.add_argument("--multi-agent", action="store_true")
+    parser.add_argument("--seeds", nargs="+", type=int, default=[0])
+    parser.add_argument(
+        "--eval-seeds", nargs="+", type=int, default=list(range(2026, 2036))
+    )
+    parser.add_argument("--timesteps", type=positive_int, default=100_000)
+    parser.add_argument(
+        "--jobs",
+        type=positive_int,
+        default=1,
+        help="global limit on simultaneous training subprocesses",
+    )
+    parser.add_argument(
+        "--threads-per-job",
+        type=positive_int,
+        default=1,
+        help="CPU numerical-library threads per training subprocess",
+    )
+    parser.add_argument(
+        "--devices",
+        nargs="+",
+        default=["cpu"],
+        help="devices assigned cyclically to persistent scheduler slots, e.g. cuda:0 cuda:1 with --jobs 2",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        help="optional wall-clock seconds per run, including training and evaluation",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("experiments/results/architecture_comparison"),
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="reuse completed leaves from the same comparison",
+    )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="with --resume, retry unfinished runs in new attempt directories, preserving previous artifacts",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate and print the tree, protocol and commands without creating directories or training",
+    )
+    parser.add_argument(
+        "--heading-action", choices=["relative", "absolute"], default="relative"
+    )
+    parser.add_argument(
+        "--speed-action", choices=["relative", "absolute"], default="absolute"
+    )
+    parser.add_argument(
+        "--observation-encoding",
+        choices=OBSERVATION_ENCODINGS,
+        default="goal_aligned_conflict",
+    )
+    parser.add_argument(
+        "--observation-profile", choices=["legacy", "control"], default="control"
+    )
+    parser.add_argument("--decision-interval", type=positive_int, default=10)
+    parser.add_argument("--speed-min", type=float, default=100)
+    parser.add_argument("--speed-max", type=float, default=500)
+    args = parser.parse_args(argv)
+    args.output_dir = args.output_dir.resolve()
+    try:
+        status = run_architecture_comparison(args)
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
+    if status:
+        raise SystemExit(status)

@@ -65,9 +65,9 @@ def comparison_command(
     ]
 
 
-def write_csv(path, rows):
+def write_csv(path, rows, fields=None):
     """Write rows with a union of fields, including optional simulator metrics."""
-    fields = list(dict.fromkeys(key for row in rows for key in row))
+    fields = fields or list(dict.fromkeys(key for row in rows for key in row))
     with path.open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()

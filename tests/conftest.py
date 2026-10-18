@@ -39,3 +39,25 @@ def env_factory():
         return DummyVecEnv([lambda: Monitor(ShortEpisode()) for _ in range(n_envs)])
 
     return make_env
+
+
+@pytest.fixture
+def small_training_budgets(monkeypatch):
+    """Keep actual builders and policy settings; shrink only collection/update budgets."""
+    from stable_baselines3 import DDPG, PPO, SAC, TD3
+
+    from bluesky_pabloramesc import models
+
+    for name, algorithm in (("PPO", PPO), ("SAC", SAC), ("TD3", TD3), ("DDPG", DDPG)):
+
+        def constructor(policy, env, _algorithm=algorithm, **kwargs):
+            kwargs.update(batch_size=max(2, env.num_envs), verbose=0)
+            if _algorithm == PPO:
+                kwargs.update(n_steps=2, n_epochs=1)
+            else:
+                kwargs.update(
+                    buffer_size=64, learning_starts=0, train_freq=1, gradient_steps=1
+                )
+            return _algorithm(policy, env, **kwargs)
+
+        monkeypatch.setattr(models, name, constructor)

@@ -53,7 +53,9 @@ class HistoryWindow(VecEnvWrapper):
                 if "terminal_observation" in infos[index]:
                     terminal = self.history[index].copy()
                     terminal[-1, :-1] = infos[index]["terminal_observation"]
-                    terminal[-1, -1] = 1
+                    terminal[-1, -1] = not infos[index].get("_temporal_inactive", False)
+                    if not terminal[-1, -1]:
+                        terminal[-1] = 0
                     infos[index]["terminal_observation"] = terminal
                 self.history[index].fill(0)
             elif infos[index].get("_temporal_inactive", False):
@@ -122,6 +124,8 @@ class TemporalFeatures(BaseFeaturesExtractor):
         temporal="gru",
         history_length=8,
     ):
+        if type(history_length) is not int or history_length <= 0:
+            raise ValueError("history_length must be a positive integer")
         if temporal not in TEMPORAL_METHODS or temporal == "none":
             raise ValueError(f"Unknown temporal encoder: {temporal}")
         if observation_space.shape != (history_length, frame_space.shape[0] + 1):

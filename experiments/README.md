@@ -16,6 +16,7 @@ Scripts:
 - `train_zoo_ppo`, `train_zoo_sac`: multi-agent shared-policy training; same modes.
 - `compare_actions`: compare four relative/absolute heading and speed combinations.
 - `compare_observations`: compare upstream, ego Cartesian, goal-aligned, and conflict features.
+- `compare_architectures`: compare conditional architecture trees in bounded parallel subprocesses.
 
 Comparisons default to PPO and one training seed. Multiple seeds require
 `--seeds`; `--output-dir` overrides their default folder under `results/`.
@@ -295,12 +296,118 @@ Terminal observations retain the final window for replay and time-limit
 bootstrapping. Past observations never cross episode or agent boundaries.
 
 Normalization statistics are shared across time, updated once per latest valid
-frame, and saved alongside the policy. Aircraft statistics remain shared across
-occupied slots; presence, graph edges, and frame-validity flags bypass
-normalization. Replay buffers store complete raw windows, so off-policy training
+frame, and saved alongside the policy. For entity encoders, aircraft statistics
+remain shared across occupied slots and presence/graph-edge masks bypass
+normalization. Frame-validity flags bypass normalization for every spatial
+architecture. Replay buffers store complete raw windows, so off-policy training
 reconstructs temporal inputs with current normalization rather than cached latent
 vectors. Evaluation freezes statistics. Checkpoints restore temporal mode and
 history length automatically and reject conflicting CLI overrides. Resuming
 training starts new simulator episodes with fresh histories and restores saved
 replay windows when available. Older non-temporal checkpoints remain supported.
 Temporal ablation runs have not been performed yet.
+
+The temporal option matrix, numerical boundary checks, and persistence tests are
+described in [tests/README.md](../tests/README.md).
+
+### Architecture comparisons
+
+Preview the complete experiment plan before training:
+
+```bash
+python -m experiments.compare_architectures --dry-run
+```
+
+The default tree contains 24 spatial variants: flat MLP (the paired baseline),
+entity MLP with five pooling/context combinations, Transformer with six, and
+GCN/GAT with six each. Depth is 1 and GNN graphs are fully connected. Temporal
+modeling is opt-in. Defaults retain the selected relative-heading/absolute-speed
+actions, 100–500 kt bounds, `goal_aligned_conflict` control observations, 10-second
+decisions, PPO, 100,000 requested transitions per run, training seed 0, and the
+same evaluation scenarios 2026–2035 for every variant.
+
+```bash
+python -m experiments.compare_architectures --jobs 4 --seeds 0 1 2 --devices cpu --output-dir experiments/results/spatial_architectures
+python -m experiments.compare_architectures --temporal none frame_stack gru lstm tcn --history-lengths 4 8 --jobs 2 --output-dir experiments/results/temporal_architectures
+```
+
+The second command produces 216 variants (24 spatial × nine temporal/history
+choices). All variants train fresh policies. Use `--dry-run` to inspect their
+commands. `--algorithm` supports single-agent PPO/SAC/TD3/DDPG; `--multi-agent`
+supports shared PPO/SAC. PPO completes full rollouts, so actual budgets can
+exceed requested transitions; reports retain both. Compare algorithms and agent
+modes in separate output directories, and inspect actual budgets before drawing
+matched-budget conclusions.
+
+Execution uses one coordinator and at most `--jobs` leaf training subprocesses.
+The tree describes choices; it does not create waiting branch processes or
+nested process pools. Each subprocess owns one simulator, trains and evaluates
+through the existing workflow, and has separate policy/normalization/configuration
+files. A free slot immediately receives the next run, avoiding static branch
+allocation when training times differ. No additional Python worker processes or
+interprocess transfers of models, tensors, or simulator state are needed.
+
+Start with `--jobs 1` (the default) and increase for available CPU/RAM capacity.
+`--threads-per-job 1` limits numerical-library CPU threads per subprocess;
+raise it if a measured workload benefits. The fastest job/thread combination
+depends on simulator cost, model size, memory and hardware. Compare recorded
+training throughput and wall times when tuning it. For two GPUs use
+`--jobs 2 --devices cuda:0 cuda:1`. Devices map cyclically to scheduler slots;
+more jobs than devices intentionally allows concurrent runs on a device.
+The default device is CPU. `--timeout SECONDS` optionally bounds an entire run,
+including evaluation. This runner uses POSIX process groups and file locks.
+
+To define conditional options and suboptions, edit
+[configs/architecture_options.json](configs/architecture_options.json):
+
+```bash
+python -m experiments.compare_architectures --tree experiments/configs/architecture_options.json --dry-run
+python -m experiments.compare_architectures --tree experiments/configs/architecture_options.json --jobs 4 --output-dir experiments/results/custom_architectures
+```
+
+This example has 13 leaves. Each node has `name`, optional `settings`, optional
+`sweep`, and optional `children`. Settings inherit down the tree; children may
+override them. Sweeps form a Cartesian product at that node, before selecting
+child branches. For example, a `knn` child can sweep `graph_k` while a `distance`
+child sweeps `graph_radius_nm`. Add additive-attention context branches or
+temporal/history sweeps in the same way. With `--tree`, put temporal choices in
+the tree instead of passing `--temporal`/`--history-lengths`. The first leaf is
+the paired baseline. Duplicate effective variants and invalid option combinations
+fail validation before any training starts.
+
+The output directory contains:
+
+| File | Contents |
+|---|---|
+| `report.md` | Consolidated ranked table with the return bar plot |
+| `summary.csv` | Returns, recorded safety/completion metrics, seed SD, training timing and actual budgets |
+| `episodes.csv` | Every evaluation scenario/agent, with variant and training seed |
+| `paired.csv` | Within-training-seed return differences from the first leaf |
+| `comparison.png` | Mean return with SD across training seed means |
+| `runs.csv`, `runs.json` | Every job's status, command, device, timing and log/report paths |
+| `comparison.json`, `execution.json` | The tree, matched protocol, resolved variants and execution resources |
+| `runs/<tree path>/seed_N/attempt_N/` | Per-run log, policy, normalization, configuration sidecars and training reports |
+
+Aggregation first averages scenarios and agents within a training seed, then
+weights training seeds equally. Agents are not counted as independent training
+replicates. Partial variants remain visible without receiving a rank. Rank uses
+raw return; inspect safety/completion columns separately. A one-seed SD of zero
+does not estimate uncertainty. Only complete, finite evaluations covering every
+requested scenario/agent are accepted.
+
+Failures do not prevent independent jobs from finishing; the command returns a
+nonzero exit status if any job fails. Ctrl-C or SIGTERM stops active process
+groups, allowing checkpoint saving before escalating termination, and preserves
+partial reports. Reuse completed runs with:
+
+```bash
+python -m experiments.compare_architectures --output-dir experiments/results/custom_architectures --resume --jobs 4
+```
+
+Keep the same algorithm, seeds, evaluation scenarios and control/training
+settings. Resume restores the original tree automatically unless `--tree` or
+temporal overrides are supplied. Job/device/thread limits may change. Unfinished
+attempts are preserved; add `--retry-failed` to train fresh attempts in new
+directories. This retries a comparison leaf from scratch; use the existing
+training `resume` mode separately to continue a preserved policy checkpoint.
+Concurrent coordinators cannot write the same comparison directory.

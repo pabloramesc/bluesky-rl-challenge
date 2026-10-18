@@ -168,8 +168,17 @@ def test_cached_results_reject_missing_scenarios_and_preserve_partial_runs(tmp_p
         completed_evaluation(tmp_path, [101])
 
 
+@pytest.mark.parametrize(
+    "encodings",
+    [
+        None,
+        ["upstream", "conflict"],
+        ["ego_cartesian", "ego_cartesian_conflict"],
+        ["goal_aligned", "goal_aligned_conflict"],
+    ],
+)
 def test_observation_comparison_pairs_variants_and_reuses_results(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, encodings
 ):
     import csv
 
@@ -178,7 +187,14 @@ def test_observation_comparison_pairs_variants_and_reuses_results(
     def run(command, check):
         commands.append(command)
         encoding = command[command.index("--observation-encoding") + 1]
-        offset = {"upstream": 0, "ego_cartesian": 2, "goal_aligned": 3}[encoding]
+        offset = {
+            "upstream": 0,
+            "ego_cartesian": 2,
+            "goal_aligned": 3,
+            "conflict": 4,
+            "ego_cartesian_conflict": 6,
+            "goal_aligned_conflict": 7,
+        }[encoding]
         seed = int(command[command.index("--seed") + 1])
         root = Path(command[command.index("--results-dir") + 1]) / "run"
         root.mkdir(parents=True)
@@ -214,8 +230,10 @@ def test_observation_comparison_pairs_variants_and_reuses_results(
         observation_profile="legacy",
         resume=False,
     )
+    if encodings is not None:
+        args.encodings = encodings
     run_comparison(args, observation=True)
-    assert len(commands) == 6
+    assert len(commands) == (8 if encodings is None else 4)
     for command in commands:
         assert command[command.index("--heading-action") + 1] == "relative"
         assert command[command.index("--speed-action") + 1] == "relative"
@@ -223,14 +241,9 @@ def test_observation_comparison_pairs_variants_and_reuses_results(
         assert command[-3:] == ["--eval-seeds", "100", "101"]
     with (args.output_dir / "paired.csv").open() as stream:
         rows = list(csv.DictReader(stream))
-    assert [float(row["difference_from_upstream"]) for row in rows] == [
-        0,
-        0,
-        2,
-        2,
-        3,
-        3,
-    ]
+    expected = [0, 0, 2, 2, 3, 3, 4, 4] if encodings is None else [0, 0, 4, 4]
+    baseline = encodings[0] if encodings else "upstream"
+    assert [float(row[f"difference_from_{baseline}"]) for row in rows] == expected
     args.resume = True
     commands.clear()
     run_comparison(args, observation=True)

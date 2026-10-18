@@ -1,14 +1,97 @@
-"""MLP baselines: edit these builders to customize networks and learning settings."""
+"""Policy builders for flat MLPs and entity MLP, Transformer, and GNN encoders."""
 
 import numpy as np
 import torch
 from stable_baselines3 import DDPG, PPO, SAC, TD3
 from stable_baselines3.common.noise import NormalActionNoise
 
+from .entities import ATTENTION_CONTEXTS, GNN_TYPES, GRAPH_TYPES, POOLING_METHODS
+
 GAMMA = 0.995
 
 
-def build_ppo(env, seed=0, device="auto", **overrides):
+def architecture_settings(
+    env,
+    architecture,
+    pooling,
+    policy_kwargs,
+    attention_context="ownship_goal",
+    transformer_layers=1,
+    gnn_type="gat",
+    gnn_layers=1,
+    graph="fully_connected",
+    graph_radius_nm=25.0,
+):
+    """Select the flat baseline or a separately learned actor/critic set encoder."""
+    if architecture not in ("mlp", "entity_mlp", "entity_transformer", "entity_gnn"):
+        raise ValueError(f"Unknown architecture: {architecture}")
+    if attention_context not in ATTENTION_CONTEXTS:
+        raise ValueError(f"Unknown attention context: {attention_context}")
+    if pooling not in POOLING_METHODS:
+        raise ValueError(f"Unknown pooling: {pooling}")
+    if pooling == "pma" and architecture not in ("entity_transformer", "entity_gnn"):
+        raise ValueError("PMA pooling requires entity_transformer or entity_gnn")
+    if not isinstance(transformer_layers, int) or transformer_layers <= 0:
+        raise ValueError("transformer_layers must be a positive integer")
+    if gnn_type not in GNN_TYPES or graph not in GRAPH_TYPES:
+        raise ValueError("Unknown GNN type or graph")
+    if not isinstance(gnn_layers, int) or gnn_layers <= 0:
+        raise ValueError("gnn_layers must be a positive integer")
+    if not np.isfinite(graph_radius_nm) or graph_radius_nm <= 0:
+        raise ValueError("graph_radius_nm must be finite and positive")
+    if architecture == "mlp":
+        return policy_kwargs
+    from .entities import EntityGNN, EntityMLP, EntityTransformer
+
+    return {
+        **policy_kwargs,
+        "features_extractor_class": {
+            "entity_mlp": EntityMLP,
+            "entity_transformer": EntityTransformer,
+            "entity_gnn": EntityGNN,
+        }[architecture],
+        "features_extractor_kwargs": {
+            "layout": env.observation_space.entity_layout,
+            "pooling": pooling,
+            **(
+                {
+                    "gnn_type": gnn_type,
+                    "gnn_layers": gnn_layers,
+                    "graph": graph,
+                    "graph_radius_nm": graph_radius_nm,
+                }
+                if architecture == "entity_gnn"
+                else {}
+            ),
+            **(
+                {"transformer_layers": transformer_layers}
+                if architecture == "entity_transformer"
+                else {}
+            ),
+            **(
+                {"attention_context": attention_context}
+                if pooling == "additive_attention"
+                else {}
+            ),
+        },
+        "share_features_extractor": False,
+    }
+
+
+def build_ppo(
+    env,
+    seed=0,
+    device="auto",
+    architecture="mlp",
+    pooling="mean_max",
+    attention_context="ownship_goal",
+    transformer_layers=1,
+    gnn_type="gat",
+    gnn_layers=1,
+    graph="fully_connected",
+    graph_radius_nm=25.0,
+    **overrides,
+):
     """Build PPO with separate 256x256 tanh actor and value networks.
 
     Args:
@@ -38,10 +121,35 @@ def build_ppo(env, seed=0, device="auto", **overrides):
         "verbose": 1,
     }
     settings.update(overrides)
+    settings["policy_kwargs"] = architecture_settings(
+        env,
+        architecture,
+        pooling,
+        settings["policy_kwargs"],
+        attention_context,
+        transformer_layers,
+        gnn_type,
+        gnn_layers,
+        graph,
+        graph_radius_nm,
+    )
     return PPO("MlpPolicy", env, **settings)
 
 
-def build_sac(env, seed=0, device="auto", **overrides):
+def build_sac(
+    env,
+    seed=0,
+    device="auto",
+    architecture="mlp",
+    pooling="mean_max",
+    attention_context="ownship_goal",
+    transformer_layers=1,
+    gnn_type="gat",
+    gnn_layers=1,
+    graph="fully_connected",
+    graph_radius_nm=25.0,
+    **overrides,
+):
     """Build SAC with a 256x256 ReLU actor and twin Q critics.
 
     Args:
@@ -73,10 +181,36 @@ def build_sac(env, seed=0, device="auto", **overrides):
         "verbose": 1,
     }
     settings.update(overrides)
+    settings["policy_kwargs"] = architecture_settings(
+        env,
+        architecture,
+        pooling,
+        settings["policy_kwargs"],
+        attention_context,
+        transformer_layers,
+        gnn_type,
+        gnn_layers,
+        graph,
+        graph_radius_nm,
+    )
     return SAC("MlpPolicy", env, **settings)
 
 
-def _build_deterministic(model_type, env, seed, device, overrides):
+def _build_deterministic(
+    model_type,
+    env,
+    seed,
+    device,
+    overrides,
+    architecture,
+    pooling,
+    attention_context,
+    transformer_layers,
+    gnn_type,
+    gnn_layers,
+    graph,
+    graph_radius_nm,
+):
     """Build a deterministic actor-critic with shared baseline settings.
 
     Args:
@@ -112,10 +246,35 @@ def _build_deterministic(model_type, env, seed, device, overrides):
         "verbose": 1,
     }
     settings.update(overrides)
+    settings["policy_kwargs"] = architecture_settings(
+        env,
+        architecture,
+        pooling,
+        settings["policy_kwargs"],
+        attention_context,
+        transformer_layers,
+        gnn_type,
+        gnn_layers,
+        graph,
+        graph_radius_nm,
+    )
     return model_type("MlpPolicy", env, **settings)
 
 
-def build_td3(env, seed=0, device="auto", **overrides):
+def build_td3(
+    env,
+    seed=0,
+    device="auto",
+    architecture="mlp",
+    pooling="mean_max",
+    attention_context="ownship_goal",
+    transformer_layers=1,
+    gnn_type="gat",
+    gnn_layers=1,
+    graph="fully_connected",
+    graph_radius_nm=25.0,
+    **overrides,
+):
     """Build TD3 with 256x256 ReLU networks and Gaussian exploration.
 
     Args:
@@ -127,10 +286,37 @@ def build_td3(env, seed=0, device="auto", **overrides):
     Returns:
         Configured SB3 TD3 model with twin critics and delayed actor updates.
     """
-    return _build_deterministic(TD3, env, seed, device, overrides)
+    return _build_deterministic(
+        TD3,
+        env,
+        seed,
+        device,
+        overrides,
+        architecture,
+        pooling,
+        attention_context,
+        transformer_layers,
+        gnn_type,
+        gnn_layers,
+        graph,
+        graph_radius_nm,
+    )
 
 
-def build_ddpg(env, seed=0, device="auto", **overrides):
+def build_ddpg(
+    env,
+    seed=0,
+    device="auto",
+    architecture="mlp",
+    pooling="mean_max",
+    attention_context="ownship_goal",
+    transformer_layers=1,
+    gnn_type="gat",
+    gnn_layers=1,
+    graph="fully_connected",
+    graph_radius_nm=25.0,
+    **overrides,
+):
     """Build DDPG with 256x256 ReLU networks and Gaussian exploration.
 
     Args:
@@ -142,10 +328,36 @@ def build_ddpg(env, seed=0, device="auto", **overrides):
     Returns:
         Configured SB3 DDPG model with one critic.
     """
-    return _build_deterministic(DDPG, env, seed, device, overrides)
+    return _build_deterministic(
+        DDPG,
+        env,
+        seed,
+        device,
+        overrides,
+        architecture,
+        pooling,
+        attention_context,
+        transformer_layers,
+        gnn_type,
+        gnn_layers,
+        graph,
+        graph_radius_nm,
+    )
 
 
-def build_multi_ppo(venv, seed=0, device="auto"):
+def build_multi_ppo(
+    venv,
+    seed=0,
+    device="auto",
+    architecture="mlp",
+    pooling="mean_max",
+    attention_context="ownship_goal",
+    transformer_layers=1,
+    gnn_type="gat",
+    gnn_layers=1,
+    graph="fully_connected",
+    graph_radius_nm=25.0,
+):
     """Build PPO for ten-agent parameter sharing.
 
     Args:
@@ -173,25 +385,48 @@ def build_multi_ppo(venv, seed=0, device="auto"):
         ent_coef=0.01,
         vf_coef=0.5,
         max_grad_norm=0.5,
-        policy_kwargs={
-            # Separate heads prevent the value objective from forcing the
-            # shared actor into the same representation bottleneck.
-            "net_arch": {
-                "pi": [256, 256, 128],
-                "vf": [256, 256, 128],
+        policy_kwargs=architecture_settings(
+            venv,
+            architecture,
+            pooling,
+            {
+                # Separate heads prevent the value objective from forcing the
+                # shared actor into the same representation bottleneck.
+                "net_arch": {
+                    "pi": [256, 256, 128],
+                    "vf": [256, 256, 128],
+                },
+                "activation_fn": torch.nn.Tanh,
+                "ortho_init": True,
+                "log_std_init": -0.5,
+                "optimizer_kwargs": {"eps": 1e-5},
             },
-            "activation_fn": torch.nn.Tanh,
-            "ortho_init": True,
-            "log_std_init": -0.5,
-            "optimizer_kwargs": {"eps": 1e-5},
-        },
+            attention_context,
+            transformer_layers,
+            gnn_type,
+            gnn_layers,
+            graph,
+            graph_radius_nm,
+        ),
         seed=seed,
         verbose=1,
         device=device,
     )
 
 
-def build_multi_sac(venv, seed=0, device="auto"):
+def build_multi_sac(
+    venv,
+    seed=0,
+    device="auto",
+    architecture="mlp",
+    pooling="mean_max",
+    attention_context="ownship_goal",
+    transformer_layers=1,
+    gnn_type="gat",
+    gnn_layers=1,
+    graph="fully_connected",
+    graph_radius_nm=25.0,
+):
     """Build SAC for ten-agent parameter sharing.
 
     Args:
@@ -221,18 +456,29 @@ def build_multi_sac(venv, seed=0, device="auto"):
         use_sde=True,
         sde_sample_freq=4,
         use_sde_at_warmup=False,
-        policy_kwargs={
-            # The critics also consume the (observation, action) input,
-            # so they get more capacity than the actor.
-            "net_arch": {
-                "pi": [256, 256, 128],
-                "qf": [512, 512, 256],
+        policy_kwargs=architecture_settings(
+            venv,
+            architecture,
+            pooling,
+            {
+                # The critics also consume the (observation, action) input,
+                # so they get more capacity than the actor.
+                "net_arch": {
+                    "pi": [256, 256, 128],
+                    "qf": [512, 512, 256],
+                },
+                "activation_fn": torch.nn.ReLU,
+                "n_critics": 2,
+                "share_features_extractor": False,
+                "optimizer_kwargs": {"eps": 1e-5},
             },
-            "activation_fn": torch.nn.ReLU,
-            "n_critics": 2,
-            "share_features_extractor": False,
-            "optimizer_kwargs": {"eps": 1e-5},
-        },
+            attention_context,
+            transformer_layers,
+            gnn_type,
+            gnn_layers,
+            graph,
+            graph_radius_nm,
+        ),
         seed=seed,
         verbose=1,
         device=device,

@@ -166,7 +166,12 @@ class SeedableSB3VecEnvWrapper(SB3VecEnvWrapper):
         return observations
 
 
-def make_vec_env(render_mode=None, control_config=None):
+def make_vec_env(
+    render_mode=None,
+    control_config=None,
+    entity_observations=False,
+    graph_radius_nm=None,
+):
     """Create ten monitored agent slots backed by one BlueSky simulator.
 
     Create only one BlueSky environment per process; simulator state is global.
@@ -185,16 +190,36 @@ def make_vec_env(render_mode=None, control_config=None):
 
     class ControlledCompetitionZooEnv(ControlHooks, CompetitionZooEnv):
         def __init__(self):
+            if graph_radius_nm is not None and not entity_observations:
+                raise ValueError("Graph observations require entity_observations=True")
+            self.graph_radius_nm = graph_radius_nm
+            self.entity_observations = entity_observations
             self.control_config = control_config or ControlConfig()
             super().__init__(render_mode=render_mode, n_agents=N_AGENTS)
             self.observation_spaces = {
-                agent: extend_observation_space(space, self.control_config)
+                agent: extend_observation_space(
+                    space,
+                    self.control_config,
+                    entity_observations,
+                    **(
+                        {"graph_radius_nm": graph_radius_nm}
+                        if graph_radius_nm is not None
+                        else {}
+                    ),
+                )
                 for agent, space in self.observation_spaces.items()
             }
 
     env = ControlledCompetitionZooEnv()
+    if entity_observations:
+        from .entities import entity_layout
+
+        layout = entity_layout(env.observation_space(env.possible_agents[0]))
     env = FlattenObs(env)
     env = JointEpisodeBlackDeath(env)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = SeedableSB3VecEnvWrapper(env)
-    return VecMonitor(env)
+    env = VecMonitor(env)
+    if entity_observations:
+        env.observation_space.entity_layout = layout
+    return env

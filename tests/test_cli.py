@@ -212,3 +212,237 @@ def test_observation_encoding_restored_and_cannot_be_overridden(tmp_path):
                 "ego_cartesian",
             ],
         )
+
+
+def test_architecture_defaults_and_checkpoint_restore(tmp_path):
+    import json
+
+    from bluesky_pabloramesc.training import architecture_config_path
+
+    assert parse_args("ppo", argv=[]).architecture == "mlp"
+    for pooling in ("mean", "max", "mean_max"):
+        args = parse_args(
+            "ppo", argv=["--architecture", "entity_mlp", "--pooling", pooling]
+        )
+        assert args.pooling == pooling
+    path = tmp_path / "policy"
+    architecture_config_path(path).write_text(
+        json.dumps({"architecture": "entity_mlp", "pooling": "max"})
+    )
+    args = parse_args("ppo", argv=["evaluate", "--model-path", str(path)])
+    assert args.architecture == "entity_mlp"
+    assert args.pooling == "max"
+    with pytest.raises(SystemExit):
+        parse_args(
+            "ppo", argv=["resume", "--model-path", str(path), "--pooling", "mean"]
+        )
+    with pytest.raises(SystemExit):
+        parse_args("ppo", argv=["--pooling", "max"])
+
+
+@pytest.mark.parametrize("context", ["ownship_goal", "all"])
+def test_attention_context_cli_restore_and_validation(tmp_path, context):
+    import json
+
+    from bluesky_pabloramesc.training import architecture_config_path
+
+    options = ["--architecture", "entity_mlp", "--pooling", "additive_attention"]
+    assert parse_args("ppo", argv=options).attention_context == "ownship_goal"
+    assert (
+        parse_args(
+            "ppo", argv=[*options, "--attention-context", context]
+        ).attention_context
+        == context
+    )
+    path = tmp_path / "policy"
+    architecture_config_path(path).write_text(
+        json.dumps(
+            {
+                "architecture": "entity_mlp",
+                "pooling": "additive_attention",
+                "attention_context": context,
+            }
+        )
+    )
+    restored = parse_args("ppo", argv=["evaluate", "--model-path", str(path)])
+    assert restored.attention_context == context
+    other = "all" if context == "ownship_goal" else "ownship_goal"
+    with pytest.raises(SystemExit):
+        parse_args(
+            "ppo",
+            argv=["resume", "--model-path", str(path), "--attention-context", other],
+        )
+    with pytest.raises(SystemExit):
+        parse_args(
+            "ppo",
+            argv=[
+                "--architecture",
+                "entity_mlp",
+                "--pooling",
+                "mean",
+                "--attention-context",
+                context,
+            ],
+        )
+
+
+@pytest.mark.parametrize("layers", [1, 2, 3])
+@pytest.mark.parametrize(
+    "pooling", ["mean", "max", "mean_max", "additive_attention", "pma"]
+)
+def test_transformer_cli_defaults_and_restore(tmp_path, layers, pooling):
+    import json
+
+    from bluesky_pabloramesc.training import architecture_config_path
+
+    options = ["--architecture", "entity_transformer", "--pooling", pooling]
+    assert parse_args("ppo", argv=options).transformer_layers == 1
+    assert (
+        parse_args(
+            "ppo", argv=[*options, "--transformer-layers", str(layers)]
+        ).transformer_layers
+        == layers
+    )
+    config = {
+        "architecture": "entity_transformer",
+        "pooling": pooling,
+        "transformer_layers": layers,
+    }
+    if pooling == "additive_attention":
+        config["attention_context"] = "all"
+    path = tmp_path / "policy"
+    architecture_config_path(path).write_text(json.dumps(config))
+    restored = parse_args("ppo", argv=["evaluate", "--model-path", str(path)])
+    assert restored.architecture == "entity_transformer"
+    assert restored.pooling == pooling
+    assert restored.transformer_layers == layers
+    with pytest.raises(SystemExit):
+        parse_args(
+            "ppo",
+            argv=[
+                "resume",
+                "--model-path",
+                str(path),
+                "--transformer-layers",
+                str(layers + 1),
+            ],
+        )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--pooling", "pma"],
+        ["--architecture", "entity_mlp", "--pooling", "pma"],
+        ["--transformer-layers", "2"],
+        ["--architecture", "entity_mlp", "--transformer-layers", "2"],
+        ["--architecture", "entity_transformer", "--transformer-layers", "0"],
+        ["--architecture", "entity_transformer", "--transformer-layers", "-1"],
+    ],
+)
+def test_invalid_transformer_cli_combinations(options):
+    with pytest.raises(SystemExit):
+        parse_args("ppo", argv=options)
+
+
+@pytest.mark.parametrize("gnn_type", ["gcn", "gat"])
+@pytest.mark.parametrize("graph", ["fully_connected", "distance"])
+def test_gnn_cli_defaults_and_checkpoint_restore(tmp_path, gnn_type, graph):
+    import json
+
+    from bluesky_pabloramesc.training import architecture_config_path
+
+    args = parse_args("ppo", argv=["--architecture", "entity_gnn"])
+    assert args.gnn_type == "gat" and args.gnn_layers == 1
+    assert args.graph == "fully_connected"
+    args = parse_args(
+        "ppo",
+        argv=[
+            "--architecture",
+            "entity_gnn",
+            "--gnn-type",
+            gnn_type,
+            "--gnn-layers",
+            "3",
+            "--graph",
+            graph,
+            "--pooling",
+            "pma",
+        ],
+    )
+    assert args.gnn_type == gnn_type and args.gnn_layers == 3 and args.graph == graph
+    config = {
+        "architecture": "entity_gnn",
+        "pooling": "pma",
+        "gnn_type": gnn_type,
+        "gnn_layers": 3,
+        "graph": graph,
+        "graph_radius_nm": 10.0,
+    }
+    path = tmp_path / "policy"
+    architecture_config_path(path).write_text(json.dumps(config))
+    restored = parse_args("ppo", argv=["evaluate", "--model-path", str(path)])
+    assert restored.gnn_type == gnn_type and restored.gnn_layers == 3
+    assert restored.graph == graph and restored.graph_radius_nm == 10.0
+    for options in (
+        ["--gnn-layers", "1"],
+        ["--gnn-type", "gat" if gnn_type == "gcn" else "gcn"],
+        ["--graph", "distance" if graph == "fully_connected" else "fully_connected"],
+    ):
+        with pytest.raises(SystemExit):
+            parse_args("ppo", argv=["resume", "--model-path", str(path), *options])
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--gnn-type", "gat"],
+        ["--gnn-layers", "2"],
+        ["--graph", "distance"],
+        ["--architecture", "entity_gnn", "--gnn-layers", "0"],
+        ["--architecture", "entity_gnn", "--graph-radius-nm", "25"],
+        *[
+            [
+                "--architecture",
+                "entity_gnn",
+                "--graph",
+                "distance",
+                "--graph-radius-nm",
+                radius,
+            ]
+            for radius in ("0", "-1", "nan", "inf")
+        ],
+    ],
+)
+def test_invalid_gnn_cli_options(options):
+    with pytest.raises(SystemExit):
+        parse_args("ppo", argv=options)
+
+
+@pytest.mark.parametrize("graph", ["fully_connected", "distance"])
+def test_gnn_cli_dispatch(graph, monkeypatch):
+    from unittest.mock import Mock
+
+    from bluesky_pabloramesc import cli
+
+    options = [
+        "trainer",
+        "--architecture",
+        "entity_gnn",
+        "--gnn-type",
+        "gcn",
+        "--graph",
+        graph,
+    ]
+    if graph == "distance":
+        options += ["--graph-radius-nm", "10"]
+    monkeypatch.setattr("sys.argv", options)
+    workflow = Mock(return_value=(1.0, 0.0))
+    monkeypatch.setattr(cli, "train", workflow)
+    cli.run_cli("ppo")
+    builder, factory = workflow.call_args.args[:2]
+    assert builder.keywords["gnn_type"] == "gcn"
+    assert factory.keywords["entity_observations"]
+    assert factory.keywords.get("graph_radius_nm") == (
+        10.0 if graph == "distance" else None
+    )

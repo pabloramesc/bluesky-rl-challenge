@@ -29,6 +29,7 @@ def comparison_command(
     device,
     observation_encoding="upstream",
     observation_profile="control",
+    decision_interval=None,
 ):
     """Build a standard training command, using identical observations and bounds."""
     module = f"experiments.train_{'zoo' if multi_agent else 'single'}_{algorithm}"
@@ -58,6 +59,7 @@ def comparison_command(
         str(directory / "reports"),
         "--device",
         device,
+        *(["--decision-interval", str(decision_interval)] if decision_interval else []),
         "--eval-seeds",
         *map(str, eval_seeds),
     ]
@@ -152,7 +154,7 @@ def completed_evaluation(directory, eval_seeds):
     )
 
 
-def prepare_comparison(args, variants=None, observation=False):
+def prepare_comparison(args, variants=None, observation=False, frequency=False):
     """Validate reuse before starting any additional simulator processes."""
     manifest = args.output_dir / "comparison.json"
     settings = {**vars(args), "variants": variants or VARIANTS}
@@ -164,6 +166,13 @@ def prepare_comparison(args, variants=None, observation=False):
             raise ValueError(f"No comparison manifest found: {manifest}")
         previous = json.loads(manifest.read_text())
         keys = ["algorithm", "multi_agent", "timesteps", "speed_min", "speed_max"]
+        if frequency:
+            keys += [
+                "heading_action",
+                "speed_action",
+                "observation_encoding",
+                "intervals",
+            ]
         if observation:
             keys += ["heading_action", "speed_action", "observation_profile"]
             if previous.get("variants") != list(variants):
@@ -188,8 +197,20 @@ def prepare_comparison(args, variants=None, observation=False):
         manifest.write_text(json.dumps(settings, default=str, indent=2) + "\n")
 
 
-def run_comparison(args, observation=False):
+def run_comparison(args, observation=False, frequency=False):
     """Train every variant/seed once, then save raw and paired comparison reports."""
+    fixed_actions = observation or frequency
+    if frequency and (args.multi_agent or args.algorithm != "ppo"):
+        raise ValueError("decision interval comparison requires single-agent PPO")
+    if frequency and (
+        not args.intervals
+        or len(set(args.intervals)) != len(args.intervals)
+        or any(type(value) is not int or value <= 0 for value in args.intervals)
+        or 10 not in args.intervals
+    ):
+        raise ValueError(
+            "intervals must be unique positive integers including baseline 10"
+        )
     if args.multi_agent and args.algorithm not in ("ppo", "sac"):
         raise ValueError("multi-agent comparison supports PPO and SAC")
     if len(set(args.seeds)) != len(args.seeds) or len(set(args.eval_seeds)) != len(
@@ -197,27 +218,56 @@ def run_comparison(args, observation=False):
     ):
         raise ValueError("training and evaluation seeds must each be unique")
     ControlConfig(
-        heading_action=args.heading_action if observation else "relative",
-        speed_action=args.speed_action if observation else "absolute",
-        observation_profile=args.observation_profile if observation else "control",
+        heading_action=args.heading_action if fixed_actions else "relative",
+        speed_action=args.speed_action if fixed_actions else "absolute",
+        observation_profile=args.observation_profile if fixed_actions else "control",
         speed_min=args.speed_min,
         speed_max=args.speed_max,
     )
-    from .observations import OBSERVATION_ENCODINGS
+    from .observations import DEFAULT_OBSERVATION_ENCODINGS, OBSERVATION_ENCODINGS
 
+    encodings = getattr(args, "encodings", DEFAULT_OBSERVATION_ENCODINGS)
+    if observation and (
+        not encodings
+        or len(set(encodings)) != len(encodings)
+        or any(name not in OBSERVATION_ENCODINGS for name in encodings)
+    ):
+        raise ValueError(
+            "observation encodings must be nonempty, unique, and supported"
+        )
     variants = (
-        [
-            (name, args.heading_action, args.speed_action, name)
-            for name in OBSERVATION_ENCODINGS
-        ]
+        [(name, args.heading_action, args.speed_action, name) for name in encodings]
         if observation
         else [(f"{h}_{s}", h, s, "upstream") for h, s in VARIANTS]
     )
+    if frequency:
+        variants = [
+            (
+                f"interval_{interval}s",
+                args.heading_action,
+                args.speed_action,
+                args.observation_encoding,
+            )
+            for interval in args.intervals
+        ]
     prepare_comparison(
-        args, [v[0] for v in variants] if observation else None, observation
+        args,
+        [v[0] for v in variants] if fixed_actions else None,
+        observation=fixed_actions,
+        frequency=frequency,
     )
     rows = []
     for variant, heading, speed, encoding in variants:
+        interval = (
+            int(variant.removeprefix("interval_").removesuffix("s"))
+            if frequency
+            else None
+        )
+        timesteps = (
+            max(1, round(args.timesteps * 10 / interval))
+            if frequency
+            else args.timesteps
+        )
         for seed in args.seeds:
             directory = args.output_dir / variant / f"seed_{seed}"
             evaluation = (
@@ -238,14 +288,15 @@ def run_comparison(args, observation=False):
                         seed,
                         args.eval_seeds,
                         directory,
-                        args.timesteps,
+                        timesteps,
                         args.speed_min,
                         args.speed_max,
                         args.device,
                         observation_encoding=encoding,
                         observation_profile=args.observation_profile
-                        if observation
+                        if fixed_actions
                         else "control",
+                        decision_interval=interval,
                     ),
                     check=True,
                 )
@@ -261,7 +312,12 @@ def run_comparison(args, observation=False):
             )
             write_csv(args.output_dir / "episodes.csv", rows)
     summary, paired = summarize(
-        rows, "upstream" if observation else "relative_relative"
+        rows,
+        "interval_10s"
+        if frequency
+        else encodings[0]
+        if observation
+        else "relative_relative",
     )
     write_csv(args.output_dir / "summary.csv", summary)
     write_csv(args.output_dir / "paired.csv", paired)

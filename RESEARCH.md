@@ -1,6 +1,6 @@
 # Research status
 
-Last reviewed: 2026-10-18. Run evidence: 2026-10-17.
+Last reviewed: 2026-10-18. Run evidence: 2026-10-17–18.
 
 ## Current findings
 
@@ -8,10 +8,14 @@ Last reviewed: 2026-10-18. Run evidence: 2026-10-17.
 - **Multi-agent:** shared-policy SAC leads shared-policy PPO.
 - **Confidence:** preliminary. Each baseline uses training seed 42 and evaluation
   seed 2026. More training seeds and evaluation scenarios are needed.
-- **Action modes:** comparison incomplete; no preferred configuration yet.
-- **Observation encodings:** [three-variant comparison](experiments/README.md)
-  implemented (upstream, ego Cartesian, goal-aligned); results pending. Predictive
-  features such as TCPA/DCPA remain deferred.
+- **Actions:** relative heading + absolute speed leads the initial paired comparison.
+- **Observations:** conflict narrowly leads return; goal-aligned leads completion.
+  No robust winner yet; comparisons use training seed 0 only.
+- **Decision interval:** retain the default 10 seconds; best mean return in the
+  initial 5/10/20-second comparison, with mixed safety results and one training seed.
+- **Best tested single-agent configuration:** million-step PPO with relative
+  heading, absolute speed, and goal-aligned control observations; 10/10 completions,
+  but safety violations remain. Budget and configuration effects are not isolated.
 
 ## Baseline results
 
@@ -34,17 +38,65 @@ Single-agent evaluations contain 5 episodes; multi-agent evaluations contain
 Raw evidence lives in `experiments/results/<run ID>/run.json`; these files are
 local and ignored by Git, so key results are preserved here.
 
+## Action and observation comparisons
+
+PPO/MLP, training seed 0, approximately 100k steps, speed bounds 100–500 kt.
+Actions use upstream/control observations and paired scenarios 2026–2028;
+observations use relative/relative actions, the legacy profile, and scenarios
+2026–2035. Higher return is better.
+
+| Comparison | Variant | Mean return | Completed |
+|---|---|---:|---:|
+| Actions (heading/speed) | **Relative/absolute** | **−553** | **3/3** |
+| Actions | Absolute/absolute | −1,242 | 0/3 |
+| Actions | Absolute/relative | −1,457 | 0/3 |
+| Actions | Relative/relative | −1,813 | 0/3 |
+| Observations | Conflict | **−508** | 0/10 |
+| Observations | Goal-aligned | −518 | **2/10** |
+| Observations | Upstream | −591 | 0/10 |
+| Observations | Ego Cartesian | −1,133 | 1/10 |
+
+Evidence: `action_modes_ppo_single`, `observation_modes_ppo_single`, and
+`default_vs_conflict_now` under `experiments/results/`. Relative/relative action
+metrics above use only the three shared scenarios from its ten-scenario evaluation.
+
+## Million-step run
+
+Fresh PPO, seed 0, relative heading/absolute speed (100–500 kt), goal-aligned
+control observations: **1,001,472 steps**, **−306.54 ± 263.28 return**, **10/10
+completions** on scenarios 2026–2035. Mean events per episode: **0.9 intrusions,
+1.1 restricted-area entries, 0.1 sector exits**. Training took 4 h 55 min.
+
+Run: `ppo_best_1m_20261018T040641/reports/policy_20261018T020645_170ce915`.
+This combines choices from separate comparisons at a larger budget; it is not
+an ablation or evidence of generalization across training seeds.
+
+## Decision interval comparison
+
+PPO/MLP, training seed 0, scenarios 2026–2035, relative heading/absolute speed
+(100–500 kt), `goal_aligned_conflict` control observations. Matched nominal budget:
+one million simulated seconds per variant (200k/100k/50k decisions), with PPO
+rollout rounding and time-scaled gamma/drift penalties.
+
+| Interval | Mean return | Completed |
+|---|---:|---:|
+| 5 s | −360.02 | 10/10 |
+| **10 s (default)** | **−260.55** | 10/10 |
+| 20 s | −266.60 | 10/10 |
+
+**Retain 10 seconds** for its best mean return. Safety is mixed: 20 seconds had
+less intrusion/restricted-area exposure but more time outside the sector
+(66.6 vs 9.7 s/episode). Ranking remains preliminary with one training seed.
+Evidence: `experiments/results/decision_interval_comparison/` (`comparison.json`,
+`summary.csv`, `paired.csv`, `episodes.csv`).
+
 ## Next experiments
 
-1. **Validate algorithm ranking:** repeat PPO and SAC with multiple training
-   seeds, matched budgets, and the same held-out scenario suite. Track completion,
-   intrusions, sector/restricted-area violations, and return.
-2. **Finish action comparison:** compare all four heading/speed combinations
-   using control observations and consistent speed bounds. Only relative/relative
-   has a completed full run in `action_modes_ppo_single`; two-step SAC smoke tests
-   do not count as research evidence.
-3. **Check training duration:** evaluate intermediate PPO checkpoints on a
-   validation suite before choosing a training budget.
+1. Validate action selection across training seeds; compare `goal_aligned` with
+   `goal_aligned_conflict` using the selected actions and control profile.
+2. Repeat PPO/SAC with matched budgets and paired scenarios across training seeds.
+3. Review safety failures and intermediate checkpoints; reserve fresh scenarios
+   for final evaluation.
 
 ## Findings log
 

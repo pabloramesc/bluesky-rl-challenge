@@ -1,4 +1,4 @@
-"""Compare existing geometry in upstream, ego Cartesian, and goal frames."""
+"""Compare upstream, ego Cartesian, goal-aligned, and conflict features."""
 
 from bluesky_pabloramesc.cli import run_comparison_cli
 

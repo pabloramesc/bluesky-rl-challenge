@@ -72,6 +72,19 @@ def parse_args(algorithm, multi_agent=False, argv=None):
         help="evaluation scenario seed, independent of the training seed",
     )
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--architecture",
+        choices=["mlp", "entity_mlp", "entity_transformer", "entity_gnn"],
+    )
+    from .entities import ATTENTION_CONTEXTS, GNN_TYPES, GRAPH_TYPES, POOLING_METHODS
+
+    parser.add_argument("--pooling", choices=POOLING_METHODS)
+    parser.add_argument("--attention-context", choices=ATTENTION_CONTEXTS)
+    parser.add_argument("--transformer-layers", type=positive_int)
+    parser.add_argument("--gnn-type", choices=GNN_TYPES)
+    parser.add_argument("--gnn-layers", type=positive_int)
+    parser.add_argument("--graph", choices=GRAPH_TYPES)
+    parser.add_argument("--graph-radius-nm", type=float)
     suffix = "marl_competition" if multi_agent else "single_mlp"
     parser.add_argument(
         "--model-path",
@@ -98,6 +111,7 @@ def parse_args(algorithm, multi_agent=False, argv=None):
         nargs="+",
         help="explicit paired scenario seeds for final training evaluation",
     )
+    parser.add_argument("--decision-interval", type=positive_int)
     parser.add_argument("--heading-action", choices=["relative", "absolute"])
     parser.add_argument("--speed-action", choices=["relative", "absolute"])
     parser.add_argument("--observation-profile", choices=["legacy", "control"])
@@ -122,6 +136,77 @@ def parse_args(algorithm, multi_agent=False, argv=None):
                 args.insert(position, flag)
                 position += 2
     parsed = parser.parse_args(args)
+    from .training import load_architecture_config
+
+    saved_architecture = (
+        load_architecture_config(parsed.model_path)
+        if parsed.mode != "train"
+        else {"architecture": "mlp", "pooling": "mean_max"}
+    )
+    if (
+        parsed.attention_context is not None
+        and (parsed.pooling or saved_architecture["pooling"]) != "additive_attention"
+    ):
+        parser.error("--attention-context requires --pooling additive_attention")
+    if saved_architecture["pooling"] == "additive_attention":
+        saved_architecture.setdefault("attention_context", "ownship_goal")
+    else:
+        saved_architecture["attention_context"] = "ownship_goal"
+    if (
+        parsed.transformer_layers is not None
+        and (parsed.architecture or saved_architecture["architecture"])
+        != "entity_transformer"
+    ):
+        parser.error("--transformer-layers requires --architecture entity_transformer")
+    import math
+
+    gnn_defaults = {
+        "gnn_type": "gat",
+        "gnn_layers": 1,
+        "graph": "fully_connected",
+        "graph_radius_nm": 25.0,
+    }
+    requested_architecture = parsed.architecture or saved_architecture["architecture"]
+    for key, default in gnn_defaults.items():
+        if getattr(parsed, key) is not None and requested_architecture != "entity_gnn":
+            parser.error(
+                f"--{key.replace('_', '-')} requires --architecture entity_gnn"
+            )
+        saved_architecture.setdefault(key, default)
+    requested_graph = parsed.graph or saved_architecture["graph"]
+    if parsed.graph_radius_nm is not None and requested_graph != "distance":
+        parser.error("--graph-radius-nm requires --graph distance")
+    radius = (
+        parsed.graph_radius_nm
+        if parsed.graph_radius_nm is not None
+        else saved_architecture["graph_radius_nm"]
+    )
+    if not math.isfinite(radius) or radius <= 0:
+        parser.error("--graph-radius-nm must be finite and positive")
+    saved_architecture.setdefault("transformer_layers", 1)
+    for key in (
+        "architecture",
+        "pooling",
+        "attention_context",
+        "transformer_layers",
+        *gnn_defaults,
+    ):
+        value = getattr(parsed, key)
+        if (
+            parsed.mode != "train"
+            and value is not None
+            and value != saved_architecture[key]
+        ):
+            parser.error("checkpoint architecture settings cannot be overridden")
+        setattr(parsed, key, value if value is not None else saved_architecture[key])
+    if parsed.architecture == "mlp" and parsed.pooling != "mean_max":
+        parser.error("--pooling requires an entity architecture")
+    if parsed.pooling == "pma" and parsed.architecture not in (
+        "entity_transformer",
+        "entity_gnn",
+    ):
+        parser.error("--pooling pma requires entity_transformer or entity_gnn")
+
     if parsed.output_path is not None and parsed.mode != "resume":
         parser.error("--output-path is only supported in resume mode")
     if parsed.eval_seeds is not None and parsed.mode in ("evaluate", "replay"):
@@ -136,6 +221,7 @@ def parse_args(algorithm, multi_agent=False, argv=None):
     )
     values = saved.to_dict()
     for key in (
+        "decision_interval",
         "heading_action",
         "speed_action",
         "observation_profile",
@@ -152,6 +238,7 @@ def parse_args(algorithm, multi_agent=False, argv=None):
     except ValueError as error:
         parser.error(str(error))
     for key in (
+        "decision_interval",
         "heading_action",
         "speed_action",
         "observation_profile",
@@ -185,10 +272,39 @@ def run_cli(algorithm, multi_agent=False):
             "ddpg": build_ddpg,
         }[algorithm]
 
+    if multi_agent and args.decision_interval != 10:
+        raise ValueError("decision interval tuning supports single-agent runs only")
+    if not multi_agent and args.decision_interval != 10:
+        from .models import GAMMA
+
+        builder = partial(builder, gamma=GAMMA ** (args.decision_interval / 10))
+
     from .actions import ControlConfig
 
     if args.control_config != ControlConfig():
         env_factory = partial(env_factory, control_config=args.control_config)
+
+    if args.architecture in ("entity_mlp", "entity_transformer", "entity_gnn"):
+        env_factory = partial(env_factory, entity_observations=True)
+        if args.architecture == "entity_gnn" and args.graph == "distance":
+            env_factory = partial(env_factory, graph_radius_nm=args.graph_radius_nm)
+        builder = partial(
+            builder,
+            architecture=args.architecture,
+            pooling=args.pooling,
+            attention_context=args.attention_context,
+            transformer_layers=args.transformer_layers,
+            **(
+                {
+                    "gnn_type": args.gnn_type,
+                    "gnn_layers": args.gnn_layers,
+                    "graph": args.graph,
+                    "graph_radius_nm": args.graph_radius_nm,
+                }
+                if args.architecture == "entity_gnn"
+                else {}
+            ),
+        )
 
     model_type = {"ppo": PPO, "sac": SAC, "td3": TD3, "ddpg": DDPG}[algorithm]
     options = {
@@ -235,13 +351,15 @@ def run_cli(algorithm, multi_agent=False):
     print(f"Episode return: {mean:.2f} +/- {std:.2f}")
 
 
-def run_comparison_cli(argv=None, *, observation=False):
+def run_comparison_cli(argv=None, *, observation=False, frequency=False):
     """Parse comparison settings and launch isolated runs sequentially."""
     from .comparison import run_comparison
 
     parser = argparse.ArgumentParser(
         description=(
-            "Compare upstream, ego Cartesian, and goal-aligned observations"
+            "Compare single-agent PPO decisions every 5, 10, and 20 seconds"
+            if frequency
+            else "Compare geometry encodings and predictive conflict observations"
             if observation
             else "Compare relative/absolute heading and speed"
         )
@@ -265,7 +383,11 @@ def run_comparison_cli(argv=None, *, observation=False):
     parser.add_argument("--speed-max", type=float, default=500)
     parser.add_argument("--device", default="auto")
     default_output = Path("experiments/results") / (
-        "observation_comparison" if observation else "action_comparison"
+        "decision_interval_comparison"
+        if frequency
+        else "observation_comparison"
+        if observation
+        else "action_comparison"
     )
     parser.add_argument(
         "--output-dir",
@@ -278,22 +400,51 @@ def run_comparison_cli(argv=None, *, observation=False):
         action="store_true",
         help="reuse completed runs in an existing comparison directory",
     )
+    if frequency:
+        parser.add_argument(
+            "--intervals", nargs="+", type=positive_int, default=[5, 10, 20]
+        )
+        parser.add_argument(
+            "--observation-encoding",
+            default="goal_aligned_conflict",
+            choices=["goal_aligned_conflict"],
+        )
     if observation:
+        from .observations import DEFAULT_OBSERVATION_ENCODINGS, OBSERVATION_ENCODINGS
+
+        parser.add_argument(
+            "--encodings",
+            nargs="+",
+            choices=OBSERVATION_ENCODINGS,
+            default=list(DEFAULT_OBSERVATION_ENCODINGS),
+            help="observation variants to compare; the first is the paired baseline",
+        )
+    if observation or frequency:
         parser.add_argument(
             "--heading-action", choices=["relative", "absolute"], default="relative"
         )
         parser.add_argument(
-            "--speed-action", choices=["relative", "absolute"], default="relative"
+            "--speed-action",
+            choices=["relative", "absolute"],
+            default="absolute" if frequency else "relative",
         )
         parser.add_argument(
-            "--observation-profile", choices=["legacy", "control"], default="legacy"
+            "--observation-profile",
+            choices=["legacy", "control"],
+            default="control" if frequency else "legacy",
         )
     args = parser.parse_args(argv)
+    variant_count = (
+        len(args.intervals) if frequency else len(args.encodings) if observation else 4
+    )
     print(
-        f"Comparison: {len(args.seeds)} training seed(s) × {3 if observation else 4} variants; completed runs are reused with --resume.",
+        f"Comparison: {len(args.seeds)} training seed(s) × {variant_count} variants; completed runs are reused with --resume.",
         flush=True,
     )
     try:
-        run_comparison(args, observation=observation)
+        if frequency:
+            run_comparison(args, frequency=True)
+        else:
+            run_comparison(args, observation=observation)
     except ValueError as error:
         parser.error(str(error))

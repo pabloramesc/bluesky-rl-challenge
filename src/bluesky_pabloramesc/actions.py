@@ -21,8 +21,11 @@ class ControlConfig:
     speed_delta: float = 20 / 3
     schema_version: int = 1
     observation_encoding: str = "upstream"
+    decision_interval: int = 10
 
     def __post_init__(self):
+        if type(self.decision_interval) is not int or self.decision_interval <= 0:
+            raise ValueError("decision interval must be a positive integer")
         for value in (self.heading_action, self.speed_action):
             if value not in ("relative", "absolute"):
                 raise ValueError("action mode must be relative or absolute")
@@ -32,6 +35,9 @@ class ControlConfig:
             "upstream",
             "ego_cartesian",
             "goal_aligned",
+            "conflict",
+            "ego_cartesian_conflict",
+            "goal_aligned_conflict",
         ):
             raise ValueError("unknown observation encoding")
         if self.heading_action == "absolute" and self.observation_profile != "control":

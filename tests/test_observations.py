@@ -5,7 +5,11 @@ import pytest
 from gymnasium import spaces
 
 from bluesky_pabloramesc.actions import ControlConfig
-from bluesky_pabloramesc.observations import encode_geometry, extend_observation_space
+from bluesky_pabloramesc.observations import (
+    OBSERVATION_ENCODINGS,
+    encode_geometry,
+    extend_observation_space,
+)
 
 
 def geometry():
@@ -55,7 +59,7 @@ def test_goal_frame_rotates_positions_velocities_and_tracks_together():
     np.testing.assert_allclose(encoded["waypoint_distance"], [2])
 
 
-@pytest.mark.parametrize("encoding", ["upstream", "ego_cartesian", "goal_aligned"])
+@pytest.mark.parametrize("encoding", OBSERVATION_ENCODINGS)
 @pytest.mark.parametrize("profile", ["legacy", "control"])
 def test_encoding_space_matches_flattened_observation(encoding, profile):
     from bluesky_pabloramesc.observations import ownship_features
@@ -113,3 +117,100 @@ def test_goal_frame_is_invariant_to_a_change_of_body_axes():
     actual = encode_geometry(rotated, "goal_aligned")
     for key in expected.keys() - {"cos_drift", "sin_drift"}:
         np.testing.assert_allclose(actual[key], expected[key], atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "position, velocity, expected",
+    [
+        ((10000, 0), (-100, 0), (100, 0, 100)),  # Head on.
+        ((10000, 0), (100, 0), (-100, 10000, -100)),  # Receding.
+        ((10000, 10000), (-100, 0), (100, 10000, 100 / np.sqrt(2))),
+        ((10000, 0), (0, 0), (0, 10000, 0)),  # Parallel.
+        ((0, 0), (0, 0), (0, 0, 0)),  # Coincident.
+        ((10000, 0), (-1e-8, 0), (0, 10000, 1e-8)),
+    ],
+)
+def test_conflict_analytic_encounters(position, velocity, expected):
+    from bluesky_pabloramesc.observations import conflict_features
+
+    observation = {
+        "x_r": np.array([position[0] / 1000, 0]),
+        "y_r": np.array([position[1] / 1000, 0]),
+        "vx_r": np.array([velocity[0] / 50, 0]),
+        "vy_r": np.array([velocity[1] / 50, 0]),
+        "cos_track": np.array([1.0, 0]),
+        "sin_track": np.zeros(2),
+    }
+    features = conflict_features(observation, pos_norm=1000, spd_norm=50)
+    for key, value, scale in zip(
+        ("tcpa", "dcpa", "closing_rate"), expected, (600, 10000, 150)
+    ):
+        np.testing.assert_allclose(features[key], [value / scale, 0], atol=1e-12)
+    np.testing.assert_array_equal(features["intruder_present"], [1, 0])
+
+
+def test_conflict_time_is_clipped_without_changing_cpa_distance():
+    original = geometry()
+    original["x_r"] = np.array([1.0, 0])
+    original["vx_r"] = np.array([-1 / 150, 0])
+    original["vy_r"] = np.zeros(2)
+    encoded = encode_geometry(original, "conflict")
+    np.testing.assert_allclose(encoded["tcpa"], [1, 0])
+    np.testing.assert_allclose(encoded["dcpa"], [0, 0])
+    for key in original:
+        np.testing.assert_array_equal(encoded[key], original[key])
+
+
+def test_conflict_hook_uses_upstream_scales_and_preserves_slot_order():
+    from types import SimpleNamespace
+
+    from bluesky_pabloramesc.observations import ControlHooks
+
+    original = geometry()
+    original["x_r"] = np.array([10.0, 20.0])
+    original["vx_r"] = np.array([-2.0, 2.0])
+    original["vy_r"] = np.zeros(2)
+    original["cos_track"] = np.ones(2)
+
+    class Base:
+        def _get_obs(self, ac_id):
+            return original
+
+    class Env(ControlHooks, Base):
+        control_config = ControlConfig(observation_encoding="conflict")
+        intruder_obs = SimpleNamespace(pos_norm=1000, spd_norm=50)
+
+    encoded = Env()._get_obs("AC1")
+    np.testing.assert_allclose(encoded["tcpa"], [100 / 600, -200 / 600])
+    np.testing.assert_allclose(encoded["dcpa"], [0, 2])
+    np.testing.assert_allclose(encoded["closing_rate"], [100 / 150, -100 / 150])
+
+
+def test_conflict_features_are_invariant_to_rotation():
+    original = geometry()
+    rotated = {key: value.copy() for key, value in original.items()}
+    angle = np.deg2rad(37)
+    c, s = np.cos(angle), np.sin(angle)
+    for x_key, y_key in (("x_r", "y_r"), ("vx_r", "vy_r")):
+        rotated[x_key] = c * original[x_key] + s * original[y_key]
+        rotated[y_key] = -s * original[x_key] + c * original[y_key]
+    expected = encode_geometry(original, "conflict")
+    actual = encode_geometry(rotated, "conflict")
+    for key in ("tcpa", "dcpa", "closing_rate", "intruder_present"):
+        np.testing.assert_allclose(actual[key], expected[key], atol=1e-12)
+
+
+@pytest.mark.parametrize("base", ["ego_cartesian", "goal_aligned"])
+def test_combined_encoding_only_appends_conflict_features(base):
+    original = geometry()
+    expected_base = encode_geometry(original, base)
+    expected_conflict = encode_geometry(original, "conflict")
+    combined = encode_geometry(original, f"{base}_conflict")
+    assert (
+        combined.keys()
+        == expected_conflict.keys() - original.keys() | expected_base.keys()
+    )
+    for key, value in expected_base.items():
+        np.testing.assert_array_equal(combined[key], value)
+    for key in ("tcpa", "dcpa", "closing_rate", "intruder_present"):
+        np.testing.assert_array_equal(combined[key], expected_conflict[key])

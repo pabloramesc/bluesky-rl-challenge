@@ -35,6 +35,22 @@ def checkpoint_paths(model_path):
     return Path(f"{stem}.zip"), Path(f"{stem}_vecnormalize.pkl")
 
 
+def architecture_config_path(model_path):
+    """Locate the architecture configuration beside a policy."""
+    path, _ = checkpoint_paths(model_path)
+    return path.with_name(f"{path.stem}_architecture.json")
+
+
+def load_architecture_config(model_path):
+    """Old checkpoints use the flat MLP baseline."""
+    path = architecture_config_path(model_path)
+    return (
+        json.loads(path.read_text())
+        if path.is_file()
+        else {"architecture": "mlp", "pooling": "mean_max"}
+    )
+
+
 def control_config_path(model_path):
     """Locate the environment configuration saved beside a policy."""
     path, _ = checkpoint_paths(model_path)
@@ -73,6 +89,13 @@ def validate_policy_config(model, config):
         raise ValueError("Policy archive control configuration does not match sidecar")
 
 
+def validate_architecture_config(model, model_path):
+    """Detect stale or missing architecture sidecars before using a policy."""
+    saved = getattr(model, "architecture_config", None)
+    if saved is not None and saved != load_architecture_config(model_path):
+        raise ValueError("Policy archive architecture does not match sidecar")
+
+
 def replay_buffer_path(model_path):
     """Derive the replay-buffer sidecar path for a checkpoint.
 
@@ -97,6 +120,10 @@ def save_checkpoint(model, env, model_path):
     model_path, stats_path = checkpoint_paths(model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
     model.save(model_path)
+    if getattr(model, "architecture_config", None) is not None:
+        architecture_config_path(model_path).write_text(
+            json.dumps(model.architecture_config, indent=2) + "\n"
+        )
     env.save(stats_path)
     if getattr(model, "control_config", None) is not None:
         control_config_path(model_path).write_text(
@@ -119,6 +146,9 @@ def save_run_checkpoint(model, env, model_path, directory):
     save_checkpoint(model, env, archived)
     targets = [*checkpoint_paths(model_path)]
     sources = [*checkpoint_paths(archived)]
+    if architecture_config_path(archived).is_file():
+        sources.append(architecture_config_path(archived))
+        targets.append(architecture_config_path(model_path))
     if control_config_path(archived).is_file():
         sources.append(control_config_path(archived))
         targets.append(control_config_path(model_path))
@@ -380,7 +410,17 @@ def train(
     try:
         env = env_factory()
         if resume_from is None:
-            env = VecNormalize(env, gamma=GAMMA, clip_obs=10.0, clip_reward=10.0)
+            interval = control_config.decision_interval if control_config else 10
+            from .entities import EntityVecNormalize
+
+            normalizer = (
+                EntityVecNormalize
+                if hasattr(env.observation_space, "entity_layout")
+                else VecNormalize
+            )
+            env = normalizer(
+                env, gamma=GAMMA ** (interval / 10), clip_obs=10.0, clip_reward=10.0
+            )
             model = builder(env, seed=seed, device=device)
         else:
             env = VecNormalize.load(source_stats, env)
@@ -388,6 +428,7 @@ def train(
             env.norm_reward = True
             model = model_type.load(source_model, env=env, device=device)
             validate_policy_config(model, control_config)
+            validate_architecture_config(model, source_model)
             model.set_random_seed(seed)
             metadata["resumed_from"] = str(source_model.resolve())
             metadata["resumed_stats_from"] = str(source_stats.resolve())
@@ -406,6 +447,33 @@ def train(
                     model.learning_starts += model.num_timesteps
         if control_config is not None:
             model.control_config = control_config.to_dict()
+        from .entities import EntityGNN, EntityMLP, EntityTransformer
+
+        extractor = model.policy.features_extractor
+        if extractor is None:
+            extractor = model.policy.actor.features_extractor
+        model.architecture_config = {
+            "architecture": "entity_mlp" if isinstance(extractor, EntityMLP) else "mlp",
+            "pooling": getattr(extractor, "pooling", "mean_max"),
+        }
+        if isinstance(extractor, EntityTransformer):
+            model.architecture_config["architecture"] = "entity_transformer"
+            model.architecture_config["transformer_layers"] = (
+                extractor.transformer_layers
+            )
+        if isinstance(extractor, EntityGNN):
+            model.architecture_config.update(
+                {
+                    "architecture": "entity_gnn",
+                    "gnn_type": extractor.gnn_type,
+                    "gnn_layers": extractor.gnn_layers,
+                    "graph": extractor.graph,
+                    "graph_radius_nm": extractor.graph_radius_nm,
+                }
+            )
+        if getattr(extractor, "pooling", None) == "additive_attention":
+            model.architecture_config["attention_context"] = extractor.attention_context
+        metadata["architecture_config"] = model.architecture_config
         initial_timesteps = model.num_timesteps
         metadata["initial_timesteps"] = initial_timesteps
         metadata.update(
@@ -541,6 +609,7 @@ def replay(
         env = VecNormalize.load(stats_path, base_env)
         model = model_type.load(model_path, env=env, device=device)
         validate_policy_config(model, control_config)
+        validate_architecture_config(model, model_path)
         return evaluate(model, env, episodes, seed)
     finally:
         env.close()

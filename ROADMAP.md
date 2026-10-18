@@ -11,22 +11,23 @@ Progress from reproducible baselines to advanced, safety-aware multi-agent contr
 
 ## 2. Actions and observations
 
-- [x] Implement relative/absolute heading/speed action options and paired 2×2 comparison runner — [usage](experiments/README.md)
-- [ ] Run the multi-seed action comparison and select a configuration
-- [ ] Optimize decision frequency
-- [ ] Compare custom ego-centric/goal-relative features against the upstream baseline
-  — [three-variant runner](experiments/README.md) implemented; results pending
-- [ ] Add TCPA, DCPA, and closing rate; compare with existing relative-bearing features
+- [x] Implement and compare relative/absolute heading/speed actions — initial comparison complete; relative heading/absolute speed preferred
+- [x] Compare 5/10/20-second decision intervals — retain default 10 seconds; initial single-seed comparison complete, validate across seeds
+- [x] Compare custom ego-centric/goal-relative features against the upstream baseline — initial single-seed comparison complete; validate across seeds
+- [ ] Validate observation ranking across training seeds with the selected action settings
+- [x] Add TCPA, DCPA, closing rate, and presence mask (`conflict` observation encoding)
+- [x] Compare conflict features with existing relative-bearing features — initial single-seed comparison complete; no robust observation winner
+- [ ] Compare goal-aligned vs goal-aligned + conflict features with relative heading/absolute speed and the control profile
 - [ ] Improve obstacle/sector geometry (nearest edge, ray casting)
 - [ ] Compare raw vs engineered features
 
 ## 3. Neural architectures
 
-- [ ] Shared entity MLP + mean/max pooling
-- [ ] Additive attention
-- [ ] Single-layer Transformer / Set Transformer
-- [ ] Graph Neural Network (GCN / GAT)
-- [ ] Temporal modeling (frame stacking vs GRU)
+- [x] Shared entity MLP + mean/max pooling — `--architecture entity_mlp --pooling mean|max|mean_max`
+- [x] Additive attention — `--architecture entity_mlp --pooling additive_attention --attention-context ownship_goal|all`
+- [x] Transformer / Set Transformer — `--architecture entity_transformer --transformer-layers N --pooling mean|max|mean_max|additive_attention|pma`
+- [x] Graph Neural Network (GCN / GAT) — `--architecture entity_gnn --gnn-type gcn|gat --graph fully_connected|distance`
+- [ ] Temporal modeling (frame stacking, LSTM, GRU, vs TCN)
 - [ ] Compare architectures using the best single-agent algorithm
 
 ## 4. Reward engineering
@@ -39,6 +40,8 @@ Progress from reproducible baselines to advanced, safety-aware multi-agent contr
 
 ## 5. Training strategies
 
+- [x] Complete a million-step PPO run — relative heading, absolute speed, goal-aligned control observations
+- [ ] Evaluate intermediate checkpoints on a validation suite to select training duration
 - [ ] Traffic-density curriculum
 - [ ] Conflict-complexity and obstacle curricula
 - [ ] Compare controlled procedural randomization ranges (seeded generation already upstream)
@@ -88,7 +91,7 @@ Progress from reproducible baselines to advanced, safety-aware multi-agent contr
 
 ## 10. Evaluation and submission
 
-- [x] Separate training/evaluation seeds (`--seed`, `--eval-seed`; default evaluation seed: 10000)
+- [x] Separate training/evaluation seeds (`--seed`, `--eval-seed`; default evaluation seed: 2026)
 - [x] Headless checkpoint evaluation with frozen normalization (`evaluate` mode; [tests](tests/test_training.py))
 - [ ] Persist run configuration, package/upstream revisions, and evaluation results
 - [ ] Explicit fixed evaluation scenario suite across policies and training seeds
@@ -102,10 +105,15 @@ Progress from reproducible baselines to advanced, safety-aware multi-agent contr
 
 ## Highest-priority path
 
-**Validate PPO/MLP and SAC/MLP under matched evaluation → conflict features → additive attention/Transformer → predictive rewards → curriculum → shared MAPPO → centralized graph critic → constrained RL → hard-scenario mining.**
+**Validate the current PPO configuration and safety failures → paired conflict-feature
+ablation → matched-budget PPO/SAC → additive attention/Transformer → predictive
+rewards → curriculum → shared MAPPO → centralized graph critic → constrained RL
+→ hard-scenario mining.**
 
-Next: train both single-agent baselines, evaluate on the same scenario suite and
-simulation budget, and record safety/completion/efficiency metrics before adding
-features. Match simulator transitions rather than command-line step counts:
-one multi-agent step contributes one transition per aircraft, and PPO may finish
-its current rollout beyond the requested timestep count.
+Next: validate the selected actions across seeds, compare goal-aligned observations
+with and without conflict features, and review checkpoint safety failures. Then
+revisit PPO/SAC under matched budgets and paired evaluation scenarios.
+
+Match simulator transitions rather than command-line step counts: one
+multi-agent step contributes one transition per aircraft, and PPO may finish
+its current rollout beyond the requested count.

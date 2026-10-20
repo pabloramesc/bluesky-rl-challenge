@@ -14,7 +14,12 @@ from time import perf_counter, sleep
 
 from .actions import ControlConfig
 from .architecture_reporting import write_architecture_report
-from .architecture_tree import default_tree, expand_tree, setting_arguments
+from .architecture_tree import (
+    default_tree,
+    expand_tree,
+    setting_arguments,
+    winning_architectures_tree,
+)
 from .comparison import comparison_command
 
 
@@ -79,6 +84,8 @@ def comparison_plan(args):
     )
     if args.multi_agent and control.decision_interval != 10:
         raise ValueError("Decision interval tuning supports single-agent runs only")
+    if args.tree is not None and getattr(args, "winning_architectures", False):
+        raise ValueError("--tree cannot be combined with --winning-architectures")
     if args.tree is not None and (
         args.temporal is not None or args.history_lengths is not None
     ):
@@ -96,7 +103,12 @@ def comparison_plan(args):
     ):
         tree = json.loads(manifest.read_text())["tree"]
     else:
-        tree = default_tree(args.temporal or ("none",), args.history_lengths or (8,))
+        tree_factory = (
+            winning_architectures_tree
+            if getattr(args, "winning_architectures", False)
+            else default_tree
+        )
+        tree = tree_factory(args.temporal or ("none",), args.history_lengths or (8,))
     variants = expand_tree(tree, args.algorithm, args.multi_agent)
     protocol = {
         "algorithm": args.algorithm,

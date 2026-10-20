@@ -76,8 +76,9 @@ rejected. For example, a conditional graph branch can be written as:
 
 `expand_tree(tree)` returns eight named variants for this example. The reporting
 module averages evaluation scenarios and agents within each training seed before
-measuring variation across training seeds. Its first variant is the paired
-baseline. Incomplete variants remain visible without receiving a rank.
+measuring variation across training seeds. Temporal variants pair against a
+matching spatial no-history control where available, falling back to the first
+variant otherwise. Incomplete variants remain visible without receiving a rank.
 Run these through `python -m experiments.compare_architectures`; see the
 [comparison guide](../experiments/README.md#architecture-comparisons) for resource
 limits, conditional tree examples, temporal sweeps and result reuse.

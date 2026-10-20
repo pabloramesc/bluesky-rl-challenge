@@ -476,7 +476,7 @@ def run_comparison_cli(argv=None, *, observation=False, frequency=False):
         parser.error(str(error))
 
 
-def run_architecture_comparison_cli(argv=None):
+def run_architecture_comparison_cli(argv=None, *, temporal_winners=False):
     """Parse the architecture tree, resource budget, and matched evaluation protocol."""
     from .architecture_comparison import run_architecture_comparison
     from .observations import OBSERVATION_ENCODINGS
@@ -484,6 +484,12 @@ def run_architecture_comparison_cli(argv=None):
 
     parser = argparse.ArgumentParser(
         description="Compare architecture-tree leaves in bounded, isolated training subprocesses"
+    )
+    parser.add_argument(
+        "--winning-architectures",
+        action="store_true",
+        default=temporal_winners,
+        help="compare only entity MLP/all-context attention and one-layer Transformer/mean_max",
     )
     parser.add_argument(
         "--tree",
@@ -494,7 +500,10 @@ def run_architecture_comparison_cli(argv=None):
         "--temporal",
         nargs="+",
         choices=TEMPORAL_METHODS,
-        help="temporal methods crossed with the default spatial tree (default: none)",
+        help=(
+            "temporal methods crossed with the selected spatial tree "
+            f"(default: {'none frame_stack gru lstm tcn' if temporal_winners else 'none'})"
+        ),
     )
     parser.add_argument(
         "--history-lengths",
@@ -506,7 +515,9 @@ def run_architecture_comparison_cli(argv=None):
         "--algorithm", choices=["ppo", "sac", "td3", "ddpg"], default="ppo"
     )
     parser.add_argument("--multi-agent", action="store_true")
-    parser.add_argument("--seeds", nargs="+", type=int, default=[0])
+    parser.add_argument(
+        "--seeds", nargs="+", type=int, default=[42] if temporal_winners else [0]
+    )
     parser.add_argument(
         "--eval-seeds", nargs="+", type=int, default=list(range(2026, 2036))
     )
@@ -537,7 +548,11 @@ def run_architecture_comparison_cli(argv=None):
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("experiments/results/architecture_comparison"),
+        default=Path(
+            "experiments/results/temporal_comparison"
+            if temporal_winners
+            else "experiments/results/architecture_comparison"
+        ),
     )
     parser.add_argument(
         "--resume",
@@ -573,9 +588,20 @@ def run_architecture_comparison_cli(argv=None):
     parser.add_argument("--speed-max", type=float, default=500)
     args = parser.parse_args(argv)
     args.output_dir = args.output_dir.resolve()
+    if (
+        temporal_winners
+        and args.temporal is None
+        and not (args.resume and (args.output_dir / "comparison.json").is_file())
+    ):
+        args.temporal = ["none", "frame_stack", "gru", "lstm", "tcn"]
     try:
         status = run_architecture_comparison(args)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     if status:
         raise SystemExit(status)
+
+
+def run_temporal_comparison_cli(argv=None):
+    """Compare temporal encoders on the two shortlisted spatial architectures."""
+    run_architecture_comparison_cli(argv, temporal_winners=True)

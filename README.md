@@ -17,6 +17,13 @@ See [UPSTREAM.md](UPSTREAM.md) for the pinned revision and update workflow.
 See [ROADMAP.md](ROADMAP.md) for implementation status and planned comparisons.
 See [RESEARCH.md](RESEARCH.md) for current findings, baseline results, and next experiments.
 
+Latest temporal comparison: PPO, seed 42, 100,352 steps per trial, ten paired
+scenarios. No-history entity MLP with all-context attention (−148.27 mean return)
+and Transformer with mean/max pooling (−148.44) both completed 10/10 scenarios.
+Eight-frame stacking, GRU, LSTM, and TCN all reduced return versus their matching
+baseline. Retain no-history policies for now; safety issues remain and more
+training seeds are needed.
+
 Use [src/](src/README.md) for your own implementations and import them from
 training scripts in `experiments/`.
 

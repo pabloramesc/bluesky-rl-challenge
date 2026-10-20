@@ -2,13 +2,19 @@
 
 import json
 from functools import partial
+from itertools import product
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.vec_env import DummyVecEnv
-from test_temporal_matrix import METHODS, TemporalTraffic, spatial_cases
+from test_temporal_matrix import (
+    METHODS,
+    SPATIAL_REPRESENTATIVES,
+    TemporalTraffic,
+    spatial_cases,
+)
 
 from bluesky_pabloramesc import cli, models
 from bluesky_pabloramesc.temporal import HistoryWindow
@@ -43,14 +49,19 @@ def saved_configuration(case, method):
     return config
 
 
-@pytest.mark.parametrize(
-    "case", [pytest.param(case, id=name) for name, case in spatial_cases()]
-)
-@pytest.mark.parametrize("method", METHODS)
-@pytest.mark.parametrize("mode", ["resume", "evaluate", "replay"])
-def test_all_temporal_cli_configurations_restore(
-    case, method, mode, tmp_path, monkeypatch
-):
+def cli_cases():
+    """Check each saved spatial option, plus every temporal/mode dispatch pair."""
+    modes = ("resume", "evaluate", "replay")
+    for index, (name, case) in enumerate(spatial_cases()):
+        yield pytest.param(case, METHODS[index % 4], modes[index % 3], id=name)
+    for method, mode in product(METHODS, modes):
+        yield pytest.param(
+            SPATIAL_REPRESENTATIVES[1][1], method, mode, id=f"{method}-{mode}"
+        )
+
+
+@pytest.mark.parametrize("case,method,mode", list(cli_cases()))
+def test_temporal_cli_restores_saved_options(case, method, mode, tmp_path, monkeypatch):
     path = tmp_path / "policy"
     config = saved_configuration(case, method)
     architecture_config_path(path).write_text(json.dumps(config))
@@ -81,33 +92,7 @@ def test_all_temporal_cli_configurations_restore(
         )
 
 
-WORKFLOW_CASES = [
-    {
-        "architecture": "entity_mlp",
-        "pooling": "additive_attention",
-        "attention_context": "all",
-    },
-    {"architecture": "entity_transformer", "pooling": "pma", "transformer_layers": 2},
-    {
-        "architecture": "entity_gnn",
-        "gnn_type": "gcn",
-        "gnn_layers": 3,
-        "graph": "distance",
-        "graph_radius_nm": 2.0,
-        "graph_k": 1,
-        "pooling": "additive_attention",
-        "attention_context": "ownship_goal",
-    },
-    {
-        "architecture": "entity_gnn",
-        "gnn_type": "gat",
-        "gnn_layers": 2,
-        "graph": "knn",
-        "graph_radius_nm": 2.0,
-        "graph_k": 1,
-        "pooling": "pma",
-    },
-]
+WORKFLOW_CASES = [case for _, case in SPATIAL_REPRESENTATIVES[1:]]
 
 
 def workflow_environment(case, render_mode=None):
@@ -117,9 +102,19 @@ def workflow_environment(case, render_mode=None):
     return HistoryWindow(DummyVecEnv([factory]), 2)
 
 
-@pytest.mark.parametrize("case", WORKFLOW_CASES)
-@pytest.mark.parametrize("method", METHODS)
-@pytest.mark.parametrize("algorithm", [PPO, SAC])
+@pytest.mark.parametrize(
+    "case,method,algorithm",
+    [
+        pytest.param(
+            WORKFLOW_CASES[(index + offset) % len(WORKFLOW_CASES)],
+            method,
+            algorithm,
+            id=f"{algorithm.__name__}-{method}",
+        )
+        for index, algorithm in enumerate((PPO, SAC))
+        for offset, method in enumerate(METHODS)
+    ],
+)
 def test_temporal_spatial_metadata_evaluate_resume_and_replay(
     case, method, algorithm, small_training_budgets, tmp_path
 ):

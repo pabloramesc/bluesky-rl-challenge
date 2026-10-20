@@ -14,18 +14,44 @@ def _number(row, key):
     return f"{row[key]:.3f}" if key in row else "—"
 
 
+def paired_baselines(variants):
+    """Match temporal variants to their spatial no-history control when present."""
+    references = {variant.name: variants[0].name for variant in variants}
+    if not any(v.settings.get("temporal", "none") != "none" for v in variants):
+        return references
+
+    def spatial_settings(variant):
+        return tuple(
+            sorted(
+                (key, value)
+                for key, value in variant.settings.items()
+                if key not in ("temporal", "history_length")
+            )
+        )
+
+    controls = {
+        spatial_settings(v): v.name
+        for v in variants
+        if v.settings.get("temporal", "none") == "none"
+    }
+    return {
+        v.name: controls.get(spatial_settings(v), references[v.name]) for v in variants
+    }
+
+
 def architecture_summary(episodes, runs, variants, seeds):
-    """Weight training seeds equally and pair returns against the first leaf."""
+    """Weight training seeds equally and pair matched scenarios against controls."""
     grouped = defaultdict(list)
     for row in episodes:
         grouped[row["variant"], row["training_seed"]].append(row)
     by_variant = defaultdict(list)
     for row in runs:
         by_variant[row["variant"]].append(row)
-    baseline = variants[0].name
+    baselines = paired_baselines(variants)
     summary, paired = [], []
     excluded = {"training_seed", "scenario_seed", "agent_index", "variant"}
     for variant in variants:
+        baseline = baselines[variant.name]
         selected = by_variant[variant.name]
         available = [seed for seed in seeds if (variant.name, seed) in grouped]
         complete = len(available) == len(seeds)
@@ -150,13 +176,20 @@ def write_architecture_report(directory, episodes, runs, variants, seeds):
             fields=empty_fields.get(filename) if not rows else None,
         )
     ordered = sorted(summary, key=lambda row: row.get("rank", float("inf")))
+    baselines = paired_baselines(variants)
     lines = [
         "# Architecture comparison",
         "",
         "Returns use identical evaluation scenarios. Means weight training seeds equally; error bars show SD across seed means.",
         "Only variants completing every requested training seed receive a rank. Rank uses raw return; inspect safety and completion metrics separately.",
         "",
-        f"Paired baseline: `{variants[0].name}`. SD is zero for a single seed and does not estimate uncertainty.",
+        (
+            "Paired baselines: spatially matched no-history controls where available; "
+            f"otherwise `{variants[0].name}`. See `paired.csv` for each baseline. "
+            "SD is zero for a single seed and does not estimate uncertainty."
+            if len(set(baselines.values())) > 1
+            else f"Paired baseline: `{next(iter(baselines.values()))}`. SD is zero for a single seed and does not estimate uncertainty."
+        ),
         "",
         "| Rank | Variant | Status | Seeds | Mean return | SD | Training seconds |",
         "|---:|---|---|---:|---:|---:|---:|",

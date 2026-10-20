@@ -78,6 +78,82 @@ def spatial_cases(depths=(1,)):
     return cases
 
 
+# One representative per distinct spatial implementation, including both research
+# winners. Pooling/graph options are exercised separately without optimizer work.
+SPATIAL_REPRESENTATIVES = [
+    ("flat", {"architecture": "mlp", "pooling": "mean_max"}),
+    (
+        "attention_all",
+        {
+            "architecture": "entity_mlp",
+            "pooling": "additive_attention",
+            "attention_context": "all",
+        },
+    ),
+    (
+        "transformer_mean_max",
+        {
+            "architecture": "entity_transformer",
+            "pooling": "mean_max",
+            "transformer_layers": 1,
+        },
+    ),
+    (
+        "gcn_distance",
+        {
+            "architecture": "entity_gnn",
+            "gnn_type": "gcn",
+            "gnn_layers": 2,
+            "graph": "distance",
+            "graph_radius_nm": 2.0,
+            "graph_k": 1,
+            "pooling": "additive_attention",
+            "attention_context": "ownship_goal",
+        },
+    ),
+    (
+        "gat_knn",
+        {
+            "architecture": "entity_gnn",
+            "gnn_type": "gat",
+            "gnn_layers": 3,
+            "graph": "knn",
+            "graph_radius_nm": 2.0,
+            "graph_k": 1,
+            "pooling": "pma",
+        },
+    ),
+]
+
+
+def encoder_cases():
+    """Cover spatial options once, plus method × history boundary interactions."""
+    for index, (name, case) in enumerate(spatial_cases()):
+        yield pytest.param(case, METHODS[index % 4], 8, id=name)
+    for name, case in SPATIAL_REPRESENTATIVES:
+        for method, history in product(METHODS, (1, 2, 17)):
+            layered = dict(case)
+            if case["architecture"] == "entity_transformer":
+                layered["transformer_layers"] = 2 if history == 2 else 3
+            yield pytest.param(
+                layered, method, history, id=f"{name}-{method}-h{history}"
+            )
+
+
+def training_cases():
+    """Exercise algorithm/temporal integration and both shortlisted encoders."""
+    for index, builder in enumerate(BUILDERS):
+        for offset, method in enumerate(METHODS):
+            name, case = SPATIAL_REPRESENTATIVES[(index + offset) % 5]
+            yield pytest.param(case, method, builder, id=f"{builder}-{method}-{name}")
+    for builder, method, (name, case) in product(
+        ("ppo", "sac"), METHODS, SPATIAL_REPRESENTATIVES[1:3]
+    ):
+        yield pytest.param(
+            case, method, builder, id=f"winner-{builder}-{method}-{name}"
+        )
+
+
 class TemporalTraffic(gym.Env):
     """Vary traffic occupancy, motion and episode boundaries without simulator globals."""
 
@@ -199,12 +275,10 @@ def batch_histories(env):
     return env.normalize_obs(result)
 
 
-@pytest.mark.parametrize(
-    "case", [pytest.param(case, id=name) for name, case in spatial_cases((1, 2, 3))]
-)
-@pytest.mark.parametrize("method", METHODS)
-@pytest.mark.parametrize("history", [1, 2, 8, 17])
-def test_every_encoder_pooling_graph_depth_and_history(case, method, history):
+@pytest.mark.parametrize("case,method,history", list(encoder_cases()))
+def test_encoder_contract_for_spatial_options_and_history_boundaries(
+    case, method, history
+):
     torch.manual_seed(41)
     env = make_environment(case, history)
     try:
@@ -262,12 +336,8 @@ def test_every_encoder_pooling_graph_depth_and_history(case, method, history):
         env.close()
 
 
-@pytest.mark.parametrize(
-    "case", [pytest.param(case, id=name) for name, case in spatial_cases()]
-)
-@pytest.mark.parametrize("method", METHODS)
-@pytest.mark.parametrize("builder", BUILDERS)
-def test_every_builder_temporal_encoder_and_pooling_trains(
+@pytest.mark.parametrize("case,method,builder", list(training_cases()))
+def test_builders_and_winning_encoders_train_and_roundtrip(
     case, method, builder, small_training_budgets
 ):
     slots = 10 if builder.startswith("multi_") else 1
@@ -326,34 +396,12 @@ def test_every_builder_temporal_encoder_and_pooling_trains(
 
 @pytest.mark.parametrize("encoding", OBSERVATION_ENCODINGS)
 @pytest.mark.parametrize("profile", ["legacy", "control"])
-@pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize(
-    "architecture,graph,gnn_type,context",
-    [("mlp", "fully_connected", "gat", "ownship_goal")]
-    + [
-        (architecture, "fully_connected", "gat", context)
-        for architecture in ("entity_mlp", "entity_transformer")
-        for context in ("ownship_goal", "all")
-    ]
-    + [
-        ("entity_gnn", graph, gnn, context)
-        for graph, gnn, context in product(
-            ("fully_connected", "distance", "knn"),
-            ("gcn", "gat"),
-            ("ownship_goal", "all"),
-        )
-    ],
+    "case", [pytest.param(case, id=name) for name, case in SPATIAL_REPRESENTATIVES]
 )
-def test_temporal_observation_encoding_and_profile_compatibility(
-    encoding, profile, method, architecture, graph, gnn_type, context
-):
-    case = {
-        "architecture": architecture,
-        "graph": graph,
-        "gnn_type": gnn_type,
-        "pooling": "additive_attention" if architecture != "mlp" else "mean_max",
-        "attention_context": context,
-    }
+def test_observation_layouts_and_normalization(encoding, profile, case):
+    # Encoding/profile alter spatial layout and binary masks, not temporal math.
+    method = "gru"
     env = make_environment(case, 2, encoding=encoding, profile=profile)
     try:
         settings = models.architecture_settings(
@@ -374,7 +422,7 @@ def test_temporal_observation_encoding_and_profile_compatibility(
 
 
 @pytest.mark.parametrize(
-    "case", [pytest.param(case, id=name) for name, case in spatial_cases((1, 2, 3))]
+    "case", [pytest.param(case, id=name) for name, case in SPATIAL_REPRESENTATIVES]
 )
 def test_temporal_none_preserves_spatial_baseline(case):
     from stable_baselines3.common.torch_layers import FlattenExtractor

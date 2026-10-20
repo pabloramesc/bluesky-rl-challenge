@@ -141,7 +141,7 @@ Architecture settings are saved in the policy and an `_architecture.json`
 sidecar; normalization is saved in the usual `_vecnormalize.pkl` file. Resume,
 evaluate, and replay restore the architecture automatically. Keep these files
 together. Use distinct `--model-path` values for ablations to avoid overwriting
-other variants. No architecture comparison runs have been performed yet.
+other variants. Spatial comparison results are recorded in [RESEARCH.md](../RESEARCH.md).
 
 Additive attention scores encoded aircraft with a 64-unit layer:
 `score_i = vᵀ tanh(W_h h_i + W_q q + b)`. A masked softmax turns scores
@@ -307,6 +307,41 @@ training starts new simulator episodes with fresh histories and restores saved
 replay windows when available. Older non-temporal checkpoints remain supported.
 Temporal ablation runs have not been performed yet.
 
+Compare temporal methods on the two spatial winners:
+
+```bash
+python -m experiments.compare_temporal --dry-run
+python -m experiments.compare_temporal --jobs 4
+```
+
+Defaults: entity MLP with additive attention/context `all`, and one-layer
+Transformer with `mean_max` pooling; each tests `none`, `frame_stack`, `gru`,
+`lstm`, and `tcn`. Temporal windows contain eight observations. All ten trials
+use fresh single-agent PPO policies, seed 42, 100k requested steps (100,352 after
+rollout rounding), relative heading/absolute speed (100–500 kt),
+`goal_aligned_conflict` control observations, 10-second decisions, and evaluation
+scenarios 2026–2035. These observations match the spatial comparison; observation
+selection remains preliminary. Output: `experiments/results/temporal_comparison/`.
+In `paired.csv`, each temporal variant uses its matching spatial no-history
+control, isolating its temporal effect. If no matching control is in the plan,
+pairing falls back to the first variant; each row records its actual baseline.
+
+Use `--history-lengths 4 8` for 18 variants, `--seeds 0 1 2` for repeated trials,
+and `--resume` to reuse completed trials. Resume restores saved temporal choices
+and windows; repeat any non-default seeds or training/control options. Use
+`--temporal none` to run only the two spatial baselines. Other architecture
+comparison controls apply; temporal choices and history lengths remain overridable.
+
+Runtime estimate on the previous CPU setup: the no-history winners took
+47–54 minutes of training per 100,352 steps, plus about 40 seconds of startup and
+evaluation. Eight-frame temporal trials provisionally budget **1–3 hours each**;
+this is an unmeasured planning estimate because every frame repeats spatial
+encoding and sequence processing adds work. Allow roughly **10–25 hours serial**
+or **3–8 hours with four jobs** for the ten-trial default, subject to CPU
+contention. Measure the first temporal trials before committing to more seeds;
+three training seeds triple the work. These are fixed-window encoders, not
+stateful recurrent PPO.
+
 The temporal option matrix, numerical boundary checks, and persistence tests are
 described in [tests/README.md](../tests/README.md).
 
@@ -371,9 +406,11 @@ override them. Sweeps form a Cartesian product at that node, before selecting
 child branches. For example, a `knn` child can sweep `graph_k` while a `distance`
 child sweeps `graph_radius_nm`. Add additive-attention context branches or
 temporal/history sweeps in the same way. With `--tree`, put temporal choices in
-the tree instead of passing `--temporal`/`--history-lengths`. The first leaf is
-the paired baseline. Duplicate effective variants and invalid option combinations
-fail validation before any training starts.
+the tree instead of passing `--temporal`/`--history-lengths`. Temporal comparisons
+pair against matching spatial no-history controls where present; otherwise the
+first leaf is the baseline. If a matched control fails, its paired differences
+are omitted rather than switched to another architecture. Duplicate effective
+variants and invalid option combinations fail validation before training.
 
 The output directory contains:
 
@@ -382,7 +419,7 @@ The output directory contains:
 | `report.md` | Consolidated ranked table with the return bar plot |
 | `summary.csv` | Returns, recorded safety/completion metrics, seed SD, training timing and actual budgets |
 | `episodes.csv` | Every evaluation scenario/agent, with variant and training seed |
-| `paired.csv` | Within-training-seed return differences from the first leaf |
+| `paired.csv` | Within-training-seed/scenario return differences and the selected baseline |
 | `comparison.png` | Mean return with SD across training seed means |
 | `runs.csv`, `runs.json` | Every job's status, command, device, timing and log/report paths |
 | `comparison.json`, `execution.json` | The tree, matched protocol, resolved variants and execution resources |

@@ -754,3 +754,164 @@ def test_actual_training_subprocesses_aggregate_and_resume(tmp_path, monkeypatch
     assert all(
         row["reused"] for row in json.loads((args.output_dir / "runs.json").read_text())
     )
+
+
+def test_temporal_comparison_preset_uses_winners_and_matched_protocol(monkeypatch):
+    from bluesky_pabloramesc.cli import run_temporal_comparison_cli
+
+    plans = []
+
+    def capture(args):
+        plans.append(comparison.comparison_plan(args))
+        return 0
+
+    monkeypatch.setattr(comparison, "run_architecture_comparison", capture)
+    run_temporal_comparison_cli([])
+    _, variants, protocol = plans.pop()
+    assert len(variants) == 10
+    assert protocol["seeds"] == [42]
+    assert protocol["timesteps"] == 100_000
+    assert protocol["eval_seeds"] == list(range(2026, 2036))
+    control = protocol["control_config"]
+    assert control["heading_action"] == "relative"
+    assert control["speed_action"] == "absolute"
+    assert control["observation_encoding"] == "goal_aligned_conflict"
+    assert control["observation_profile"] == "control"
+    assert control["decision_interval"] == 10
+    for variant in variants:
+        settings = variant.settings
+        if settings["architecture"] == "entity_mlp":
+            assert settings["pooling"] == "additive_attention"
+            assert settings["attention_context"] == "all"
+        else:
+            assert settings["architecture"] == "entity_transformer"
+            assert settings["pooling"] == "mean_max"
+            assert settings["transformer_layers"] == 1
+        if settings["temporal"] != "none":
+            assert settings["history_length"] == 8
+    run_temporal_comparison_cli(["--history-lengths", "4", "8", "--seeds", "0", "1"])
+    _, variants, protocol = plans.pop()
+    assert len(variants) == 18
+    assert protocol["seeds"] == [0, 1]
+
+
+def test_temporal_preset_allows_no_history_and_builds_matching_commands(monkeypatch):
+    from bluesky_pabloramesc.cli import run_temporal_comparison_cli
+
+    def capture(args):
+        _, variants, _ = comparison.comparison_plan(args)
+        assert len(variants) == 2
+        for variant in variants:
+            assert variant.settings["temporal"] == "none"
+            assert "history_length" not in variant.settings
+            command = comparison.architecture_command(
+                args, variant, 42, args.output_dir / "trial", "cpu"
+            )
+            assert command[command.index("--temporal") + 1] == "none"
+            assert "--history-length" not in command
+        return 0
+
+    monkeypatch.setattr(comparison, "run_architecture_comparison", capture)
+    run_temporal_comparison_cli(["--temporal", "none"])
+
+
+def test_temporal_preset_resume_restores_saved_custom_windows(monkeypatch, tmp_path):
+    from bluesky_pabloramesc.cli import run_temporal_comparison_cli
+
+    plans = []
+
+    def capture(args):
+        plans.append(comparison.comparison_plan(args))
+        return 0
+
+    monkeypatch.setattr(comparison, "run_architecture_comparison", capture)
+    output = ["--output-dir", str(tmp_path)]
+    run_temporal_comparison_cli(
+        [*output, "--temporal", "none", "gru", "--history-lengths", "4", "8"]
+    )
+    tree, variants, protocol = plans.pop()
+    assert len(variants) == 6
+    (tmp_path / "comparison.json").write_text(
+        json.dumps({"tree": tree, "protocol": protocol})
+    )
+    run_temporal_comparison_cli([*output, "--resume"])
+    restored_tree, restored_variants, restored_protocol = plans.pop()
+    assert restored_tree == tree
+    assert restored_variants == variants
+    assert restored_protocol == protocol
+
+
+def test_winner_preset_rejects_custom_tree(monkeypatch, tmp_path):
+    from bluesky_pabloramesc.cli import run_temporal_comparison_cli
+
+    def capture(args):
+        comparison.comparison_plan(args)
+        pytest.fail("Conflicting tree should be rejected before scheduling")
+
+    monkeypatch.setattr(comparison, "run_architecture_comparison", capture)
+    with pytest.raises(SystemExit) as error:
+        run_temporal_comparison_cli(["--tree", str(tmp_path / "tree.json")])
+    assert error.value.code == 2
+
+
+def test_temporal_reports_pair_with_matching_spatial_controls(tmp_path):
+    from bluesky_pabloramesc.architecture_tree import winning_architectures_tree
+
+    variants = expand_tree(winning_architectures_tree(("none", "gru"), (4, 8)))
+    rows, runs = [], []
+    for index, variant in enumerate(variants):
+        # Deliberately different spatial baselines: a shared reference would
+        # include that spatial offset in the Transformer GRU gain.
+        for scenario in (100, 101):
+            rows.append(
+                {
+                    "variant": variant.name,
+                    "training_seed": 42,
+                    "scenario_seed": scenario,
+                    "agent_index": 0,
+                    "return": 10 * (index // 3) + index + scenario,
+                }
+            )
+        runs.append(
+            {"variant": variant.name, "training_seed": 42, "status": "completed"}
+        )
+    _, paired = architecture_summary(rows, runs, variants, [42])
+    for index, row in enumerate(paired):
+        assert row["baseline"] == variants[3 * (index // 3)].name
+        assert row["paired_difference"] == index % 3
+    write_architecture_report(tmp_path, rows, runs, variants, [42])
+    assert "spatially matched no-history" in (tmp_path / "report.md").read_text()
+
+    # Explicit CLI ordering can put the temporal model before its control.
+    write_architecture_report(tmp_path, rows, runs, [variants[1], variants[0]], [42])
+    assert (
+        f"Paired baseline: `{variants[0].name}`" in (tmp_path / "report.md").read_text()
+    )
+
+    # A failed matched control must not silently switch to the other architecture.
+    rows = [row for row in rows if row["variant"] != variants[3].name]
+    _, paired = architecture_summary(rows, runs, variants, [42])
+    assert {row["variant"] for row in paired} == {v.name for v in variants[:3]}
+
+
+def test_temporal_report_without_matching_control_labels_fallback():
+    variants = [
+        ArchitectureVariant(("baseline",), {"architecture": "mlp", "temporal": "none"}),
+        ArchitectureVariant(
+            ("temporal",),
+            {"architecture": "entity_mlp", "temporal": "gru", "history_length": 8},
+        ),
+    ]
+    rows = [
+        {
+            "variant": variant.name,
+            "training_seed": 0,
+            "scenario_seed": 100,
+            "agent_index": 0,
+            "return": value,
+        }
+        for variant, value in zip(variants, (10, 15))
+    ]
+    _, paired = architecture_summary(rows, [], variants, [0])
+    assert paired[1]["baseline"] == "baseline"
+    assert paired[1]["paired_difference"] == 5

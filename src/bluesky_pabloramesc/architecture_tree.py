@@ -190,6 +190,38 @@ def default_tree(temporal=("none",), history_lengths=(8,)):
         ],
     }
 
+    return _with_temporal(tree, temporal, history_lengths)
+
+
+def winning_architectures_tree(temporal, history_lengths):
+    """Cross the two shortlisted spatial encoders with temporal window choices."""
+    tree = {
+        "name": "temporal_winners",
+        "children": [
+            {
+                "name": "entity_mlp_attention_all",
+                "settings": {
+                    "architecture": "entity_mlp",
+                    "pooling": "additive_attention",
+                    "attention_context": "all",
+                },
+            },
+            {
+                "name": "transformer_mean_max",
+                "settings": {
+                    "architecture": "entity_transformer",
+                    "pooling": "mean_max",
+                    "transformer_layers": 1,
+                },
+            },
+        ],
+    }
+    return _with_temporal(tree, temporal, history_lengths)
+
+
+def _with_temporal(tree, temporal, history_lengths):
+    """Append temporal choices to each spatial leaf."""
+
     def add_temporal(node):
         if node.get("children"):
             for child in node["children"]:

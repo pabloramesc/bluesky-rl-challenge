@@ -1,6 +1,6 @@
 # Research status
 
-Last reviewed: 2026-10-18. Run evidence: 2026-10-17–18.
+Last reviewed: 2026-10-20. Run evidence: 2026-10-17–20.
 
 ## Current findings
 
@@ -13,7 +13,12 @@ Last reviewed: 2026-10-18. Run evidence: 2026-10-17–18.
   No robust winner yet; comparisons use training seed 0 only.
 - **Decision interval:** retain the default 10 seconds; best mean return in the
   initial 5/10/20-second comparison, with mixed safety results and one training seed.
-- **Best tested single-agent configuration:** million-step PPO with relative
+- **Architectures:** entity MLP with all-context attention and Transformer with
+  mean/max pooling nearly tie for best return; both complete 10/10 scenarios.
+  Preliminary: one training seed, with safety violations remaining.
+- **Temporal models:** retain no-history policies at 100k steps; all eight
+  temporal variants reduced return in the seed-42 comparison.
+- **Million-step single-agent configuration:** PPO with relative
   heading, absolute speed, and goal-aligned control observations; 10/10 completions,
   but safety violations remain. Budget and configuration effects are not isolated.
 
@@ -90,12 +95,63 @@ less intrusion/restricted-area exposure but more time outside the sector
 Evidence: `experiments/results/decision_interval_comparison/` (`comparison.json`,
 `summary.csv`, `paired.csv`, `episodes.csv`).
 
+## Architecture comparison
+
+All 24 spatial variants completed: single-agent PPO, training seed 42,
+100,352 steps each, paired scenarios 2026–2035. Relative heading/absolute speed
+(100–500 kt), `goal_aligned_conflict` control observations, 10-second decisions;
+no temporal processing. Transformers/GNNs use one layer; GNNs are fully connected.
+
+| Variant | Mean return | Completed |
+|---|---:|---:|
+| Entity MLP, additive attention (`all`) | **−148.27** | **10/10** |
+| Transformer, mean/max pooling | −148.44 | **10/10** |
+| GCN, mean pooling | −161.50 | 8/10 |
+| GAT, PMA pooling | −182.29 | **10/10** |
+| Flat MLP baseline | −645.28 | 6/10 |
+
+**Shortlist the top two for repeated seeds**; their 0.18 return gap does not
+establish a winner. Entity MLP trained in 47.3 min versus 53.5 min for Transformer.
+Safety remains unresolved: respectively 1.2/0.8 intrusions and 0.8/0.7
+restricted-area entries per episode; neither had sector exits. Entity structure
+helped most variants, but attention was not consistently beneficial across models.
+Evidence: `experiments/results/architecture_comparison/` (`comparison.json`,
+`summary.csv`, `runs.json` with per-run IDs); variant paths above map to seed 42.
+
+## Temporal comparison
+
+All ten trials completed: single-agent PPO, seed 42, **100,352 actual steps** each,
+paired scenarios 2026–2035. Same spatial winners, actions, observations and
+10-second interval as the architecture comparison; temporal histories contain
+eight observations. Higher return is better; completions are out of ten.
+
+| Temporal model | Entity MLP return | Completed | Transformer return | Completed |
+|---|---:|---:|---:|---:|
+| **None** | **−148.27** | 10/10 | **−148.44** | 10/10 |
+| Frame stack | −266.88 | 10/10 | −531.31 | 8/10 |
+| GRU | −788.89 | 2/10 | −241.13 | 10/10 |
+| LSTM | −428.06 | 10/10 | −201.70 | 10/10 |
+| TCN | −322.04 | 10/10 | −300.62 | 10/10 |
+
+**Retain no-history policies.** Transformer LSTM is the closest temporal challenger
+(−53.26 versus its own baseline), but increases intrusion/restricted-area events
+from 0.8/0.7 to 1.1/1.0 per episode. Lower intrusion counts alone can mislead:
+entity MLP GRU has 0.5 per episode but only 2/10 completions and 8/10 timeouts.
+No overall temporal safety win is established; results use one training seed.
+Training took 50–56 min per baseline and 58–95 min per temporal trial; the full
+comparison took about 3 h 20 min with four CPU workers.
+Evidence: `experiments/results/temporal_comparison/` (`summary.csv`, `paired.csv`,
+`runs.json` with per-run IDs). Paired differences use each spatial model's own
+no-history baseline. This tests eight-frame windows at 100k steps, not all temporal
+settings or training budgets.
+
 ## Next experiments
 
-1. Validate action selection across training seeds; compare `goal_aligned` with
+1. Repeat the top two architectures and flat MLP across training seeds.
+2. Validate action selection across training seeds; compare `goal_aligned` with
    `goal_aligned_conflict` using the selected actions and control profile.
-2. Repeat PPO/SAC with matched budgets and paired scenarios across training seeds.
-3. Review safety failures and intermediate checkpoints; reserve fresh scenarios
+3. Repeat PPO/SAC with matched budgets and paired scenarios across training seeds.
+4. Review safety failures and intermediate checkpoints; reserve fresh scenarios
    for final evaluation.
 
 ## Findings log

@@ -5,18 +5,24 @@ Put reusable code in `bluesky_pabloramesc/` and experiment entry points in
 
 | Module | Purpose |
 | --- | --- |
-| `models.py` | PPO/SAC/TD3/DDPG MLP architectures and hyperparameters |
+| `models.py` | PPO/SAC/TD3/DDPG/MAPPO builders and hyperparameters |
+| `mappo.py` | Custom MAPPO networks, joint rollouts, masked GAE, and PPO updates |
+| `multi_agent_attention.py` | Local additive-attention actors/critics and an active-agent attention critic |
 | `single_agent.py` | Single-aircraft Gymnasium environment |
 | `multi_agent.py` | PettingZoo wrappers and vector environment |
 | `training.py` | Training, checkpoints, evaluation, and replay |
 | `reporting.py` | Run metadata, raw episode histories, and performance plots |
 | `cli.py` | Shared command-line options |
 | `actions.py` | Validated action configuration and heading/CAS target mappings |
+| `rewards.py` | Configurable progress, predictive separation, clearance, time, and command-smoothness rewards |
+| `reward_ablation.py` | Seven fixed-architecture baseline/add-one reward trials and paired behavior reports |
+| `geometry.py` | Shared closest-approach calculation, local metre projection, and signed polygon clearance |
 | `observations.py` | Geometry encodings, optional conflict features, ownship state, and shared environment hooks |
 | `comparison.py` | Isolated action/observation ablations and paired reports |
 | `architecture_tree.py` | Conditional architecture options, inherited settings, and Cartesian sweeps |
 | `architecture_reporting.py` | Architecture CSVs, seed-paired differences, ranked tables, and plots |
 | `architecture_comparison.py` | Bounded subprocess scheduling, resume/retry, logs, and report collection |
+| `context_attention_comparison.py` | New-only context-token training, read-only attention references, and matched combined reports |
 
 Add your own modules alongside these as needed. For example, after creating
 `agents.py`, import it with `from bluesky_pabloramesc.agents import MyAgent`.
@@ -32,14 +38,50 @@ python -m pytest
 
 Editable installation makes source changes available without reinstalling.
 
+Custom MAPPO uses `build_mappo` from `models.py` and `make_mappo_env` from
+`multi_agent.py`. `mappo.py` implements its own collection, joint rollout buffer,
+GAE, and clipped actor/value losses; SB3's on-policy base supplies the existing
+callback, logging, prediction, and archive interfaces. Training and normalization
+sidecars still use `training.py`.
+
+The actor contract is `Actor(observation_dim, action_dim, **kwargs)` with
+`forward(observations)` returning action means of shape `[..., action_dim]`.
+The critic contract is `Critic(observation_dim, n_agents, **kwargs)` with
+`forward(observations, active)` mapping `[batch, agents, features]` and a boolean
+`[batch, agents]` mask to `[batch, agents]` values. Supply replacements through
+`policy_kwargs` (`actor_class`, `critic_class`, `actor_kwargs`, `critic_kwargs`).
+Joint minibatches preserve the agent axis so attention, Transformer, and GNN
+critics can use peer information without changing the update. Actors retain
+local observations at inference. MAPPO/IPPO support flat MLPs and
+`--architecture entity_mlp --pooling additive_attention --attention-context all`;
+other entity and temporal encoders are not yet wired to these trainers.
+
+`multi_agent_attention.py` reuses `EntityMLP` with additive pooling for separate
+local actor/critic encoders. It preserves arbitrary batch/agent dimensions around
+the extractor. The centralized critic also projects local features into agent
+embeddings and uses focal-agent-conditioned additive attention over active agents,
+then combines the summary with the focal features to predict each value. Padding
+is masked before encoding and pooling; empty active sets produce zero values.
+
 `entities.py` implements shared aircraft MLP encoding, masked mean/max pooling,
-additive attention with ownship/goal or full context, and slot-shared
+additive attention and ego multihead cross-attention with ownship/goal or full
+context, and slot-shared
 normalization. Select it with `--architecture entity_mlp`;
-`--architecture mlp` remains the default.
+`--architecture mlp` remains the default. Use `--pooling ego_attention` for a
+context-conditioned query attending to neighbour embeddings through four heads;
+`--attention-context ownship_goal|all` selects its query inputs.
 
 `--architecture entity_transformer` adds configurable aircraft self-attention
 (`--transformer-layers`, default 1). It reuses all MLP pooling methods and adds
 `--pooling pma` for a Set Transformer variant with one learned pooling query.
+
+`--architecture context_entity_transformer` instead jointly attends over aircraft
+and a token encoding all non-aircraft context (ownship, goal, obstacles and sector).
+It uses pre-norm blocks and a final LayerNorm, with the same 64-dimensional tokens,
+four heads and configurable `--transformer-layers` (default 1). The updated context
+token is concatenated with raw context for the policy/value heads. Its fixed
+`context_token` readout is selected automatically; empty traffic keeps the context
+token active. No aircraft slot positional embeddings are used.
 
 `--architecture entity_gnn` adds GCN/GAT message passing with configurable depth
 and graph connectivity. Fully connected graphs are the default; distance and
@@ -82,3 +124,18 @@ variant otherwise. Incomplete variants remain visible without receiving a rank.
 Run these through `python -m experiments.compare_architectures`; see the
 [comparison guide](../experiments/README.md#architecture-comparisons) for resource
 limits, conditional tree examples, temporal sweeps and result reuse.
+
+`ippo.py` implements separate PPO learners per fixed aircraft slot and the shared
+local-critic PPO control. It reuses `mappo.py`'s masked collection, individual
+termination/truncation handling, GAE, and clipped losses. IPPO keeps networks,
+optimizers, advantage normalization, and KL stopping independent. Its checkpoint
+stores every optimizer; batched prediction preserves fixed slot order.
+
+`multi_agent_comparison.py` compares IPPO, shared PPO, and MAPPO with matched head
+widths, PPO settings, joint simulator budgets, and evaluation scenarios. Select
+flat MLPs (default) or additive attention with `--architecture entity_mlp` and
+optional `--attention-context all|ownship_goal` (default `all`). It reuses
+the bounded subprocess scheduler and paired reporting. Training/checkpoints remain
+in `training.py`, builders in `models.py`, argument parsing in `cli.py`, and the
+two experiment entry points only dispatch to those modules. All three methods
+pool normalization statistics within a run and freeze them during evaluation.

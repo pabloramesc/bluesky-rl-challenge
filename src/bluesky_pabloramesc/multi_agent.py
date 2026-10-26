@@ -87,12 +87,15 @@ class JointEpisodeBlackDeath(BaseParallelWrapper):
 
     Missing observations and rewards are padded with zeros. Joint completion
     uses the underlying agents list because termination and truncation flags
-    are mutually exclusive in this environment.
+    are mutually exclusive in this environment. With track_agents, infos retain
+    individual completion flags and next-step activity for MAPPO. Final rewards
+    and infos are preserved even if a departing agent omits its observation.
     """
 
-    def __init__(self, env, track_history=False):
+    def __init__(self, env, track_history=False, track_agents=False):
         super().__init__(env)
         self.track_history = track_history
+        self.track_agents = track_agents
 
     def reset(self, seed=None, options=None):
         """Reset the environment and restore all possible agent slots.
@@ -117,16 +120,37 @@ class JointEpisodeBlackDeath(BaseParallelWrapper):
         Returns:
             Padded observations, rewards, joint terminations, false truncations, and infos.
         """
+        active_agents = set(self.env.agents)
         active_actions = {agent: actions[agent] for agent in self.env.agents}
-        observations, rewards, _, _, infos = self.env.step(active_actions)
+        observations, rewards, terminated, truncated, infos = self.env.step(
+            active_actions
+        )
         joint_done = not self.env.agents
 
         for agent in self.possible_agents:
+            if (
+                self.track_agents
+                and truncated.get(agent, False)
+                and agent not in observations
+            ):
+                raise ValueError("Truncated agents must provide a final observation")
             if agent not in observations:
                 space = self.observation_space(agent)
                 observations[agent] = np.zeros(space.shape, dtype=space.dtype)
-                rewards[agent] = 0.0
-                infos[agent] = {}
+            rewards.setdefault(agent, 0.0)
+            infos.setdefault(agent, {})
+            if self.track_agents:
+                is_truncated = bool(truncated.get(agent, False))
+                is_terminated = bool(terminated.get(agent, False)) or (
+                    agent in active_agents
+                    and agent not in self.env.agents
+                    and not is_truncated
+                )
+                infos[agent].update(
+                    _mappo_active=agent in self.env.agents,
+                    _mappo_terminated=is_terminated,
+                    _mappo_truncated=is_truncated,
+                )
 
         if self.track_history:
             for agent in self.possible_agents:
@@ -136,6 +160,10 @@ class JointEpisodeBlackDeath(BaseParallelWrapper):
         truncations = {agent: False for agent in self.possible_agents}
         if joint_done:
             self.agents = []
+            # SuperSuit merges reset infos over terminal infos during auto-reset.
+            # Preserve the departing episode's metrics until the SB3 adapter.
+            for info in infos.values():
+                info["_joint_final_info"] = dict(info)
         return observations, rewards, terminations, truncations, infos
 
 
@@ -173,6 +201,13 @@ class SeedableSB3VecEnvWrapper(SB3VecEnvWrapper):
         self._pending_seed = None
         return observations
 
+    def step_wait(self):
+        """Restore terminal metrics overwritten by SuperSuit's reset-info merge."""
+        observations, rewards, dones, infos = super().step_wait()
+        for info in infos:
+            info.update(info.pop("_joint_final_info", {}))
+        return observations, rewards, np.asarray(dones, dtype=bool), infos
+
 
 def make_vec_env(
     render_mode=None,
@@ -181,6 +216,8 @@ def make_vec_env(
     graph_radius_nm=None,
     graph_k=None,
     history_length=None,
+    track_agents=False,
+    reward_config=None,
 ):
     """Create ten monitored agent slots backed by one BlueSky simulator.
 
@@ -189,6 +226,8 @@ def make_vec_env(
     Args:
         render_mode: Rendering mode, or None for headless operation.
         control_config: ControlConfig, or None for the unchanged legacy interface.
+        track_agents: Include individual boundaries and activity in agent infos.
+        reward_config: RewardConfig, or None to keep all new reward weights zero.
 
     Returns:
         VecMonitor wrapping a seeded SB3-compatible shared-policy environment.
@@ -197,8 +236,9 @@ def make_vec_env(
 
     from .actions import ControlConfig
     from .observations import ControlHooks, extend_observation_space
+    from .rewards import RewardConfig, RewardHooks
 
-    class ControlledCompetitionZooEnv(ControlHooks, CompetitionZooEnv):
+    class ControlledCompetitionZooEnv(RewardHooks, ControlHooks, CompetitionZooEnv):
         def __init__(self):
             if graph_radius_nm is not None and graph_k is not None:
                 raise ValueError(
@@ -212,6 +252,7 @@ def make_vec_env(
             self.graph_radius_nm = graph_radius_nm
             self.entity_observations = entity_observations
             self.control_config = control_config or ControlConfig()
+            self.reward_config = reward_config or RewardConfig()
             super().__init__(render_mode=render_mode, n_agents=N_AGENTS)
             self.observation_spaces = {
                 agent: extend_observation_space(
@@ -234,7 +275,9 @@ def make_vec_env(
 
         layout = entity_layout(env.observation_space(env.possible_agents[0]))
     env = FlattenObs(env)
-    env = JointEpisodeBlackDeath(env, track_history=history_length is not None)
+    env = JointEpisodeBlackDeath(
+        env, track_history=history_length is not None, track_agents=track_agents
+    )
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = SeedableSB3VecEnvWrapper(env)
     env = VecMonitor(env)
@@ -245,3 +288,19 @@ def make_vec_env(
 
         env = HistoryWindow(env, history_length)
     return env
+
+
+def make_mappo_env(
+    render_mode=None,
+    control_config=None,
+    reward_config=None,
+    entity_observations=False,
+):
+    """Create one joint simulator with fixed slots and individual MAPPO boundaries."""
+    return make_vec_env(
+        render_mode=render_mode,
+        control_config=control_config,
+        track_agents=True,
+        reward_config=reward_config,
+        entity_observations=entity_observations,
+    )

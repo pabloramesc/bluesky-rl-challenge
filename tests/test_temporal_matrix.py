@@ -33,6 +33,8 @@ POOLING = (
     ("mean_max", "ownship_goal"),
     ("additive_attention", "ownship_goal"),
     ("additive_attention", "all"),
+    ("ego_attention", "ownship_goal"),
+    ("ego_attention", "all"),
     ("pma", "ownship_goal"),
 )
 BUILDERS = ("ppo", "sac", "td3", "ddpg", "multi_ppo", "multi_sac")

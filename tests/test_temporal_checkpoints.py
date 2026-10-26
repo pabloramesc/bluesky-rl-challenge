@@ -33,7 +33,7 @@ def saved_configuration(case, method):
         "temporal": method,
         "history_length": 2,
     }
-    if case["pooling"] == "additive_attention":
+    if case["pooling"] in ("additive_attention", "ego_attention"):
         config["attention_context"] = case["attention_context"]
     if case["architecture"] == "entity_transformer":
         config["transformer_layers"] = case["transformer_layers"]

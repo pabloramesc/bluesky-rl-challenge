@@ -74,6 +74,8 @@ python -m experiments.train_single_td3 --timesteps 100000
 python -m experiments.train_single_ddpg --timesteps 100000
 python -m experiments.train_zoo_ppo 100000
 python -m experiments.train_zoo_sac 100000
+python -m experiments.train_zoo_mappo --timesteps 100000
+python -m experiments.train_zoo_ippo --timesteps 100000
 ```
 
 To add more training to an existing checkpoint:
@@ -87,7 +89,24 @@ python -m experiments.train_single_ppo resume --timesteps 100000
 replay buffers, and saving to a new path.
 
 The `train_single_*` scripts train single-agent MLP policies; `train_zoo_*`
-scripts train shared policies in the multi-agent environment.
+scripts train policies in the multi-agent environment. `train_zoo_ippo` keeps a
+separate MLP actor, local critic, and optimizer for each aircraft; PPO/SAC and
+MAPPO share actor parameters.
+
+Compare IPPO, parameter-shared PPO, and MAPPO with matched MLPs and joint budgets:
+
+```bash
+python -m experiments.compare_multi_agent --joint-steps 102400 --seeds 42 43 44
+```
+
+See the [multi-agent comparison guide](experiments/README.md#multi-agent-ppo-comparison)
+for the shared-PPO control, normalization, budget conventions, and report files.
+
+`train_zoo_mappo` uses custom MAPPO: a shared local MLP actor and a separate
+centralized MLP critic over all aircraft observations. It supports the same
+training, resume, evaluation, normalization, and checkpoint workflow. See the
+[MAPPO guide](experiments/README.md#custom-mappo) for network extension points
+and timestep conventions.
 
 Training defaults to 100,000 steps and displays SB3's tqdm/Rich progress bar.
 Periodic checkpoints are saved every 10,000 steps at rollout boundaries. Ctrl+C
@@ -101,6 +120,16 @@ Use `python -m experiments.compare_architectures --dry-run` to preview an
 architecture comparison tree. The [architecture comparison guide](experiments/README.md#architecture-comparisons)
 covers conditional options, bounded parallel jobs, temporal sweeps, and combined
 CSV/table/plot reports.
+
+Use `python -m experiments.compare_attention --dry-run` to preview the focused
+comparison of additive attention, ego cross-attention, and the entity Transformer.
+See the [attention comparison guide](experiments/README.md#attention-comparison)
+for training and resume commands.
+
+Use `python -m experiments.compare_context_attention` to train the context-token
+Transformer with the saved attention comparison's protocol and compare all four
+architectures. It imports the three completed reference results without retraining
+them. See the [context comparison guide](experiments/README.md#context-token-attention-comparison).
 
 See [experiments/README.md](experiments/README.md) for training details.
 Generated checkpoints and results are kept under `experiments/models/` and

@@ -7,7 +7,16 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import VecNormalize
 from torch import nn
 
-POOLING_METHODS = ("mean", "max", "mean_max", "additive_attention", "pma")
+ATTENTION_POOLING = ("additive_attention", "ego_attention")
+POOLING_METHODS = (
+    "mean",
+    "max",
+    "mean_max",
+    *ATTENTION_POOLING,
+    "pma",
+    "context_token",
+)
+TRANSFORMER_ARCHITECTURES = ("entity_transformer", "context_entity_transformer")
 ATTENTION_CONTEXTS = ("ownship_goal", "all")
 GNN_TYPES = ("gcn", "gat")
 GRAPH_TYPES = ("fully_connected", "distance", "knn")
@@ -84,7 +93,9 @@ class AdditiveAttention(nn.Module):
 class EntityMLP(BaseFeaturesExtractor):
     """Encode each aircraft with shared weights, then pool occupied slots."""
 
-    supported_pooling = tuple(method for method in POOLING_METHODS if method != "pma")
+    supported_pooling = tuple(
+        method for method in POOLING_METHODS if method not in ("pma", "context_token")
+    )
 
     def __init__(
         self,
@@ -112,7 +123,7 @@ class EntityMLP(BaseFeaturesExtractor):
             nn.ReLU(),
         )
 
-        if pooling == "additive_attention":
+        if pooling in ATTENTION_POOLING:
             self.attention_context = attention_context
             query_indices = (
                 layout["context"]
@@ -126,7 +137,12 @@ class EntityMLP(BaseFeaturesExtractor):
             self.register_buffer(
                 "query_indices", torch.tensor(query_indices, dtype=torch.long)
             )
-            self.attention = AdditiveAttention(len(query_indices))
+            attention_type = (
+                AdditiveAttention
+                if pooling == "additive_attention"
+                else EgoCrossAttention
+            )
+            self.attention = attention_type(len(query_indices))
 
     def encode_entities(self, entities, present):
         """Encode aircraft independently; subclasses may add interactions."""
@@ -146,7 +162,7 @@ class EntityMLP(BaseFeaturesExtractor):
         pooled = []
         if self.pooling == "pma":
             pooled.append(self.pma(encoded, present))
-        if self.pooling == "additive_attention":
+        if self.pooling in ATTENTION_POOLING:
             pooled.append(
                 self.attention(encoded, observations[:, self.query_indices], present)
             )
@@ -163,6 +179,37 @@ def attention_padding_mask(present):
     padding = ~present.clone()
     padding[:, 0] &= present.any(dim=1)
     return padding
+
+
+class EgoCrossAttention(nn.Module):
+    """Read the aircraft set with one context-conditioned, four-head query."""
+
+    def __init__(self, context_size):
+        super().__init__()
+        self.query_encoder = nn.Sequential(
+            nn.Linear(context_size, 64), nn.ReLU(), nn.Linear(64, 64)
+        )
+        self.attention = nn.MultiheadAttention(64, 4, dropout=0, batch_first=True)
+        self.attention_norm = nn.LayerNorm(64)
+        self.feed_forward = nn.Sequential(
+            nn.Linear(64, 128), nn.ReLU(), nn.Linear(128, 64)
+        )
+        self.output_norm = nn.LayerNorm(64)
+
+    def forward(self, encoded, context, present):
+        """Return a 64-feature summary, or zero for observations without traffic."""
+        query = self.query_encoder(context).unsqueeze(1)
+        values = encoded.masked_fill(~present.unsqueeze(-1), 0)
+        attended, _ = self.attention(
+            query,
+            values,
+            values,
+            key_padding_mask=attention_padding_mask(present),
+            need_weights=False,
+        )
+        summary = self.attention_norm(query + attended)
+        summary = self.output_norm(summary + self.feed_forward(summary)).squeeze(1)
+        return summary.masked_fill(~present.any(dim=1, keepdim=True), 0)
 
 
 class PoolingMultiheadAttention(nn.Module):
@@ -196,10 +243,30 @@ class PoolingMultiheadAttention(nn.Module):
         return summary.masked_fill(~present.any(dim=1, keepdim=True), 0)
 
 
+def transformer_blocks(layers, *, norm_first=False):
+    """Build independently initialized spatial attention blocks."""
+    if type(layers) is not int or layers <= 0:
+        raise ValueError("transformer_layers must be a positive integer")
+    return nn.ModuleList(
+        [
+            nn.TransformerEncoderLayer(
+                d_model=64,
+                nhead=4,
+                dim_feedforward=128,
+                dropout=0,
+                activation="relu",
+                batch_first=True,
+                norm_first=norm_first,
+            )
+            for _ in range(layers)
+        ]
+    )
+
+
 class EntityTransformer(EntityMLP):
     """Refine aircraft embeddings with self-attention before set pooling."""
 
-    supported_pooling = POOLING_METHODS
+    supported_pooling = tuple(p for p in POOLING_METHODS if p != "context_token")
 
     def __init__(
         self,
@@ -213,20 +280,7 @@ class EntityTransformer(EntityMLP):
             raise ValueError("transformer_layers must be a positive integer")
         super().__init__(observation_space, layout, pooling, attention_context)
         self.transformer_layers = transformer_layers
-        # Construct independently to avoid identical initial weights at every depth.
-        self.transformer = nn.ModuleList(
-            [
-                nn.TransformerEncoderLayer(
-                    d_model=64,
-                    nhead=4,
-                    dim_feedforward=128,
-                    dropout=0,
-                    activation="relu",
-                    batch_first=True,
-                )
-                for _ in range(transformer_layers)
-            ]
-        )
+        self.transformer = transformer_blocks(transformer_layers)
         if pooling == "pma":
             self.pma = PoolingMultiheadAttention()
 
@@ -238,6 +292,54 @@ class EntityTransformer(EntityMLP):
             encoded = layer(encoded, src_key_padding_mask=padding)
             encoded = encoded.masked_fill(~present.unsqueeze(-1), 0)
         return encoded
+
+
+class ContextEntityTransformer(EntityMLP):
+    """Jointly attend over full context and aircraft; read the context token."""
+
+    supported_pooling = ("context_token",)
+
+    def __init__(
+        self,
+        observation_space,
+        layout,
+        pooling="context_token",
+        transformer_layers=1,
+    ):
+        if not layout["context"]:
+            raise ValueError("Context Transformer requires observation context")
+        super().__init__(observation_space, layout, pooling)
+        self.transformer_layers = transformer_layers
+        self.context_encoder = nn.Sequential(
+            nn.Linear(len(layout["context"]), 64), nn.ReLU(), nn.Linear(64, 64)
+        )
+        self.transformer = transformer_blocks(transformer_layers, norm_first=True)
+        self.output_norm = nn.LayerNorm(64)
+
+    def encode_tokens(self, observations):
+        """Keep context visible even when every aircraft slot is absent."""
+        context = observations[:, self.context_indices]
+        present = observations[:, self.mask_indices] > 0.5
+        aircraft = observations[:, self.aircraft_indices]
+        aircraft = aircraft.masked_fill(~present.unsqueeze(-1), 0)
+        tokens = torch.cat(
+            [self.context_encoder(context).unsqueeze(1), self.encoder(aircraft)], dim=1
+        )
+        padding = torch.cat([torch.zeros_like(present[:, :1]), ~present], dim=1)
+        for layer in self.transformer:
+            tokens = layer(tokens, src_key_padding_mask=padding)
+            tokens = tokens.masked_fill(padding.unsqueeze(-1), 0)
+        return self.output_norm(tokens).masked_fill(padding.unsqueeze(-1), 0)
+
+    def forward(self, observations):
+        """Return raw context plus its traffic-conditioned token representation."""
+        return torch.cat(
+            [
+                observations[:, self.context_indices],
+                self.encode_tokens(observations)[:, 0],
+            ],
+            dim=1,
+        )
 
 
 class GraphConvolution(nn.Module):
@@ -289,7 +391,7 @@ class GraphAttention(nn.Module):
 class EntityGNN(EntityMLP):
     """Pass messages between observed aircraft, then reuse invariant set pooling."""
 
-    supported_pooling = POOLING_METHODS
+    supported_pooling = tuple(p for p in POOLING_METHODS if p != "context_token")
 
     def __init__(
         self,

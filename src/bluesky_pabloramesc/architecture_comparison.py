@@ -15,6 +15,7 @@ from time import perf_counter, sleep
 from .actions import ControlConfig
 from .architecture_reporting import write_architecture_report
 from .architecture_tree import (
+    attention_comparison_tree,
     default_tree,
     expand_tree,
     setting_arguments,
@@ -84,6 +85,13 @@ def comparison_plan(args):
     )
     if args.multi_agent and control.decision_interval != 10:
         raise ValueError("Decision interval tuning supports single-agent runs only")
+    attention_comparison = getattr(args, "attention_comparison", False)
+    if attention_comparison and (
+        args.tree is not None or getattr(args, "winning_architectures", False)
+    ):
+        raise ValueError(
+            "--attention-comparison cannot be combined with --tree or --winning-architectures"
+        )
     if args.tree is not None and getattr(args, "winning_architectures", False):
         raise ValueError("--tree cannot be combined with --winning-architectures")
     if args.tree is not None and (
@@ -108,6 +116,8 @@ def comparison_plan(args):
             if getattr(args, "winning_architectures", False)
             else default_tree
         )
+        if attention_comparison:
+            tree_factory = attention_comparison_tree
         tree = tree_factory(args.temporal or ("none",), args.history_lengths or (8,))
     variants = expand_tree(tree, args.algorithm, args.multi_agent)
     protocol = {
@@ -162,7 +172,7 @@ def _evaluation(record, variant, protocol):
     expected = {
         "seed": record["training_seed"],
         "requested_timesteps": protocol["timesteps"],
-        "algorithm": protocol["algorithm"].upper(),
+        "algorithm": protocol.get("algorithm_class", protocol["algorithm"].upper()),
         "control_config": protocol["control_config"],
     }
     if any(report.get(key) != value for key, value in expected.items()):
@@ -215,9 +225,10 @@ def _evaluation(record, variant, protocol):
     ]
 
 
-def _prepare_runs(args, variants, protocol, previous):
+def _prepare_runs(args, variants, protocol, previous, evaluation_reader=None):
     """Reuse valid results and preserve unsuccessful attempts before explicit retry."""
     records, episodes = [], []
+    evaluation_reader = evaluation_reader or _evaluation
     indexed = {
         (record["variant"], record["training_seed"]): record for record in previous
     }
@@ -230,7 +241,7 @@ def _prepare_runs(args, variants, protocol, previous):
                         f"Training process {old['pid']} is still running for {variant.name}"
                     )
                 try:
-                    evaluation = _evaluation(old, variant, protocol)
+                    evaluation = evaluation_reader(old, variant, protocol)
                 except (ValueError, OSError) as error:
                     if old["status"] == "completed" and not args.retry_failed:
                         raise
@@ -308,9 +319,19 @@ def _interrupt_handler(signum, frame):
     raise KeyboardInterrupt
 
 
-def _schedule(args, variants, protocol, records, episodes):
+def _schedule(
+    args,
+    variants,
+    protocol,
+    records,
+    episodes,
+    command_builder=None,
+    evaluation_reader=None,
+):
     """A single lightweight event loop dynamically refills bounded device slots."""
     queue = deque(record for record in records if record["status"] == "queued")
+    command_builder = command_builder or architecture_command
+    evaluation_reader = evaluation_reader or _evaluation
     slots = deque(range(args.jobs))
     active = {}
     by_name = {variant.name: variant for variant in variants}
@@ -333,7 +354,7 @@ def _schedule(args, variants, protocol, records, episodes):
                 variant = by_name[record["variant"]]
                 device = args.devices[slot % len(args.devices)]
                 directory = Path(record["directory"])
-                command = architecture_command(
+                command = command_builder(
                     args, variant, record["training_seed"], directory, device
                 )
                 directory.mkdir(parents=True)
@@ -377,7 +398,7 @@ def _schedule(args, variants, protocol, records, episodes):
                 record["status"] = "failed"
                 if process.returncode == 0 and not timed_out:
                     try:
-                        evaluation = _evaluation(
+                        evaluation = evaluation_reader(
                             record, by_name[record["variant"]], protocol
                         )
                         if evaluation is None:

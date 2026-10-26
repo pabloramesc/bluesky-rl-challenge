@@ -241,12 +241,13 @@ def test_architecture_defaults_and_checkpoint_restore(tmp_path):
 
 
 @pytest.mark.parametrize("context", ["ownship_goal", "all"])
-def test_attention_context_cli_restore_and_validation(tmp_path, context):
+@pytest.mark.parametrize("pooling", ["additive_attention", "ego_attention"])
+def test_attention_context_cli_restore_and_validation(tmp_path, context, pooling):
     import json
 
     from bluesky_pabloramesc.training import architecture_config_path
 
-    options = ["--architecture", "entity_mlp", "--pooling", "additive_attention"]
+    options = ["--architecture", "entity_mlp", "--pooling", pooling]
     assert parse_args("ppo", argv=options).attention_context == "ownship_goal"
     assert (
         parse_args(
@@ -259,7 +260,7 @@ def test_attention_context_cli_restore_and_validation(tmp_path, context):
         json.dumps(
             {
                 "architecture": "entity_mlp",
-                "pooling": "additive_attention",
+                "pooling": pooling,
                 "attention_context": context,
             }
         )
@@ -288,7 +289,7 @@ def test_attention_context_cli_restore_and_validation(tmp_path, context):
 
 @pytest.mark.parametrize("layers", [1, 2, 3])
 @pytest.mark.parametrize(
-    "pooling", ["mean", "max", "mean_max", "additive_attention", "pma"]
+    "pooling", ["mean", "max", "mean_max", "additive_attention", "ego_attention", "pma"]
 )
 def test_transformer_cli_defaults_and_restore(tmp_path, layers, pooling):
     import json
@@ -308,7 +309,7 @@ def test_transformer_cli_defaults_and_restore(tmp_path, layers, pooling):
         "pooling": pooling,
         "transformer_layers": layers,
     }
-    if pooling == "additive_attention":
+    if pooling in ("additive_attention", "ego_attention"):
         config["attention_context"] = "all"
     path = tmp_path / "policy"
     architecture_config_path(path).write_text(json.dumps(config))

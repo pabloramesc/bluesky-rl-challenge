@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from itertools import product
 
+from .entities import ATTENTION_POOLING, TRANSFORMER_ARCHITECTURES
+
 ARCHITECTURE_KEYS = (
     "architecture",
     "pooling",
@@ -49,9 +51,9 @@ def effective_settings(parsed):
         settings["history_length"] = parsed.history_length
     if parsed.architecture != "mlp":
         settings["pooling"] = parsed.pooling
-        if parsed.pooling == "additive_attention":
+        if parsed.pooling in ATTENTION_POOLING:
             settings["attention_context"] = parsed.attention_context
-    if parsed.architecture == "entity_transformer":
+    if parsed.architecture in TRANSFORMER_ARCHITECTURES:
         settings["transformer_layers"] = parsed.transformer_layers
     if parsed.architecture == "entity_gnn":
         for key in ("gnn_type", "gnn_layers", "graph"):
@@ -156,12 +158,13 @@ def default_tree(temporal=("none",), history_lengths=(8,)):
         nodes = [
             {"name": p, "settings": {"pooling": p}} for p in ("mean", "max", "mean_max")
         ]
-        nodes.append(
+        nodes.extend(
             {
-                "name": "additive_attention",
-                "settings": {"pooling": "additive_attention"},
+                "name": pooling,
+                "settings": {"pooling": pooling},
                 "sweep": {"attention_context": ["ownship_goal", "all"]},
             }
+            for pooling in ATTENTION_POOLING
         )
         if pma:
             nodes.append({"name": "pma", "settings": {"pooling": "pma"}})
@@ -193,9 +196,9 @@ def default_tree(temporal=("none",), history_lengths=(8,)):
     return _with_temporal(tree, temporal, history_lengths)
 
 
-def winning_architectures_tree(temporal, history_lengths):
-    """Cross the two shortlisted spatial encoders with temporal window choices."""
-    tree = {
+def _shortlisted_spatial_tree():
+    """The two spatial controls shared by focused comparisons."""
+    return {
         "name": "temporal_winners",
         "children": [
             {
@@ -216,6 +219,28 @@ def winning_architectures_tree(temporal, history_lengths):
             },
         ],
     }
+
+
+def winning_architectures_tree(temporal, history_lengths):
+    """Cross the two shortlisted spatial encoders with temporal window choices."""
+    return _with_temporal(_shortlisted_spatial_tree(), temporal, history_lengths)
+
+
+def attention_comparison_tree(temporal=("none",), history_lengths=(8,)):
+    """Compare ego cross-attention against the two shortlisted spatial encoders."""
+    tree = _shortlisted_spatial_tree()
+    tree["name"] = "attention_comparison"
+    tree["children"].insert(
+        1,
+        {
+            "name": "ego_attention_all",
+            "settings": {
+                "architecture": "entity_mlp",
+                "pooling": "ego_attention",
+                "attention_context": "all",
+            },
+        },
+    )
     return _with_temporal(tree, temporal, history_lengths)
 
 

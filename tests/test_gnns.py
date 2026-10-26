@@ -83,6 +83,8 @@ def test_graph_layer_numerical_examples():
         ("mean_max", "ownship_goal"),
         ("additive_attention", "ownship_goal"),
         ("additive_attention", "all"),
+        ("ego_attention", "ownship_goal"),
+        ("ego_attention", "all"),
         ("pma", "ownship_goal"),
     ],
 )

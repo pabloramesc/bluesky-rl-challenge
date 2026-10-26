@@ -4,6 +4,7 @@ import numpy as np
 from gymnasium import spaces
 
 from .actions import KNOTS_PER_MPS, action_targets
+from .geometry import closest_approach
 
 DEFAULT_OBSERVATION_ENCODINGS = (
     "upstream",
@@ -31,13 +32,10 @@ def conflict_features(observation, pos_norm=1_000_000, spd_norm=150):
     vy = np.asarray(observation["vy_r"], dtype=float) * spd_norm
     present = (observation["cos_track"] ** 2 + observation["sin_track"] ** 2) > 0
     distance = np.hypot(x, y)
-    speed_squared = vx * vx + vy * vy
     dot = x * vx + y * vy
-    tcpa = np.divide(
-        -dot, speed_squared, out=np.zeros_like(x), where=speed_squared > 1e-6
+    tcpa, dcpa = closest_approach(
+        np.stack([x, y], axis=-1), np.stack([vx, vy], axis=-1)
     )
-    future_time = np.maximum(tcpa, 0)
-    dcpa = np.hypot(x + future_time * vx, y + future_time * vy)
     closing = np.divide(-dot, distance, out=np.zeros_like(x), where=distance > 0)
     return {
         "tcpa": np.where(present, np.clip(tcpa / 600, -1, 1), 0),
@@ -232,5 +230,9 @@ class ControlHooks:
             bs.traf.cas[index] * KNOTS_PER_MPS,
             self.control_config,
         )
+        self._on_action_target(ac_id, heading, speed)
         bs.stack.stack(f"HDG {ac_id} {heading}")
         bs.stack.stack(f"SPD {ac_id} {speed}")
+
+    def _on_action_target(self, ac_id, heading, speed):
+        """Optional hook for costs on physical command targets."""

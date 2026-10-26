@@ -12,6 +12,7 @@ def make_env(
     graph_radius_nm=None,
     graph_k=None,
     history_length=None,
+    reward_config=None,
 ):
     """Create a monitored single-aircraft environment with flat observations.
 
@@ -20,6 +21,7 @@ def make_env(
     Args:
         render_mode: Rendering mode, or None for headless operation.
         control_config: ControlConfig, or None for the unchanged legacy interface.
+        reward_config: RewardConfig, or None to keep all new reward weights zero.
 
     Returns:
         DummyVecEnv containing one monitored CompetitionEnv.
@@ -28,8 +30,9 @@ def make_env(
 
     from .actions import ControlConfig
     from .observations import ControlHooks, extend_observation_space
+    from .rewards import RewardConfig, RewardHooks
 
-    class ControlledCompetitionEnv(ControlHooks, CompetitionEnv):
+    class ControlledCompetitionEnv(RewardHooks, ControlHooks, CompetitionEnv):
         def __init__(self):
             if graph_radius_nm is not None and graph_k is not None:
                 raise ValueError(
@@ -43,6 +46,7 @@ def make_env(
             self.graph_radius_nm = graph_radius_nm
             self.entity_observations = entity_observations
             self.control_config = control_config or ControlConfig()
+            self.reward_config = reward_config or RewardConfig()
             super().__init__(
                 render_mode=render_mode,
                 action_frequency=self.control_config.decision_interval,

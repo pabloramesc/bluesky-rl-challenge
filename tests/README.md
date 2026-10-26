@@ -14,6 +14,7 @@ BlueSky simulators or require trained policies.
 
 | Suite | Coverage |
 |---|---|
+| `test_mappo.py` | Masked GAE and clipped-loss references; decentralized actor/centralized critic; joint departures, final-state timeout bootstrap, real updates, replaceable modules, checkpoints, normalization, resume, cancellation, and CLI dispatch |
 | `test_temporal.py` | Basic history lifecycle, temporal order, causality, training and persistence |
 | `test_temporal_matrix.py` | Every spatial option at the encoder level; temporal/history boundaries; all six builders × four temporal methods; both research winners with PPO/SAC; observation layouts and binary masks |
 | `test_temporal_boundaries.py` | Actual SuperSuit ten-slot departures/reset, timeout bootstrapping, replay contents, recurrent references, TCN receptive field, normalization counts and invalid inputs |
@@ -68,3 +69,53 @@ These are functional and numerical tests, not policy-performance ablations.
 Positive history lengths and layer counts are configurable without an upper
 bound; representative boundary values are tested rather than every integer.
 Continuous radii, seeds, and simulator scenarios are not exhaustively enumerated.
+
+`test_ego_attention.py` verifies a single context-conditioned four-head query,
+masked neighbours, context selection, empty traffic, all policy builders, and
+training/checkpoint/evaluation/resume round trips. Existing entity/GNN tests also
+check ego readout permutation invariance, padding, and finite gradients. The
+architecture comparison tests cover the three-variant attention preset, matched
+protocol, reporting, and reuse on resume.
+
+`test_rewards.py` checks the reward formulas, finite CPA edge cases, signed polygon
+clearances, command wrapping, interval scaling, reset, and individual completion
+using small synthetic environments. `test_reward_checkpoints.py` checks reward CLI
+validation, component reporting, legacy defaults, archive/sidecar consistency,
+and training/resume/evaluation configuration restoration.
+
+`test_reward_ablation.py` checks one-term variant isolation, fixed attention/PPO
+commands, matched scenarios, objective pairing, per-seed aggregation, report
+validation, and process scheduling/resume without simulator training.
+
+`test_ippo.py` verifies separate actors/critics/optimizers, peer-independent local
+inference and updates, independent KL stopping, departed-agent masking, timeout
+bootstrapping, every optimizer's checkpoint state, frozen evaluation statistics,
+and train/resume/evaluate/replay CLI workflows. It also checks SuperSuit's integer
+done flags and preserves terminal metrics across auto-reset during scenario
+evaluation. Synthetic traffic uses the MAPPO test
+fixture so boundary behavior stays comparable.
+
+`test_multi_agent_comparison.py` verifies matched worker commands and budgets,
+strict report validation, paired summaries with safety and training costs,
+read-only dry runs, and rejection of changed protocols on resume for flat MLPs
+and additive attention. It rejects mismatched attention network classes and
+context, and reuse of MLP manifests for attention runs.
+
+`test_multi_agent_attention.py` checks local aircraft permutation invariance,
+decentralized actors and local critics, peer-sensitive centralized values,
+agent permutation equivariance, departed-agent and empty-set masking, and finite
+gradients. Synthetic joint environments exercise updates to actor/critic attention,
+all three algorithms' optimizer round trips, architecture sidecars, entity
+normalization, frozen evaluation, resumed training, and CLI configuration.
+
+## Context-token Transformer checks
+
+`test_context_transformer.py` checks context/aircraft interactions before readout,
+aircraft permutation invariance, padding, empty traffic, finite gradients,
+separate actor/critic encoders, short policy updates, serialization, checkpoint
+evaluation/resume, temporal integration, CLI dispatch and custom comparison trees.
+
+`test_context_attention_comparison.py` checks that only the new architecture
+launches, reference files remain unchanged, inherited protocols match, all four
+results appear in paired reports, and resume/retry never trains a reference.
+Missing, changed or mismatched evidence is rejected before reuse.

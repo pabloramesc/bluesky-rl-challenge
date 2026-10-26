@@ -1,13 +1,18 @@
 # Research status
 
-Last reviewed: 2026-10-20. Run evidence: 2026-10-17–20.
+Last reviewed: 2026-10-26. Run evidence: 2026-10-17–26 (Europe/Madrid).
 
 ## Current findings
 
 - **Single-agent:** PPO has the best observed return; SAC is second.
-- **Multi-agent:** shared-policy SAC leads shared-policy PPO.
-- **Confidence:** preliminary. Each baseline uses training seed 42 and evaluation
-  seed 2026. More training seeds and evaluation scenarios are needed.
+- **Multi-agent:** shared PPO leads MAPPO/IPPO in the matched 100k-joint-step
+  comparisons with flat MLP and additive attention; SAC led PPO in the earlier,
+  smaller-budget baseline.
+- **Rewards:** retain the base reward; none of six added terms improved the
+  common base return in the seed-42 ablation.
+- **Confidence:** preliminary. The initial baselines use training seed 42 and evaluation
+  seed 2026; later comparisons use paired scenarios 2026–2035. More training
+  seeds and fresh evaluation scenarios are needed.
 - **Actions:** relative heading + absolute speed leads the initial paired comparison.
 - **Observations:** conflict narrowly leads return; goal-aligned leads completion.
   No robust winner yet; comparisons use training seed 0 only.
@@ -118,6 +123,46 @@ helped most variants, but attention was not consistently beneficial across model
 Evidence: `experiments/results/architecture_comparison/` (`comparison.json`,
 `summary.csv`, `runs.json` with per-run IDs); variant paths above map to seed 42.
 
+## Attention comparison
+
+Single-agent PPO, training seed 42, 100,352 steps per variant, paired scenarios
+2026–2035; same actions, observations and 10-second interval as the architecture
+comparison, with no temporal processing. Additive attention, ego cross-attention
+and the context Transformer use all context. The context comparison reuses the
+three completed reference runs and trains only the new context Transformer.
+
+| Variant | Mean return | Completed |
+|---|---:|---:|
+| Entity MLP, additive attention | **−148.27** | **10/10** |
+| Transformer, mean/max pooling | −148.44 | **10/10** |
+| Entity MLP, ego cross-attention | −283.80 | 7/10 |
+| Context Transformer, context-token pooling | −520.95 | 8/10 |
+
+Additive attention independently encodes each aircraft, then uses context to
+weight and sum the aircraft embeddings. The mean/max Transformer first applies
+self-attention between aircraft, then pools their updated embeddings. The context
+Transformer instead encodes the full non-aircraft context into a 64-feature token
+alongside the 64-feature aircraft tokens. One four-head, pre-normalized Transformer
+layer attends jointly over these tokens, masking absent aircraft. Its updated
+context token is concatenated with the raw context for the policy and value
+networks. This summarizes the current observation; it adds no temporal memory.
+
+**Keep additive attention and Transformer shortlisted.** Ego cross-attention
+reduced restricted-area entries (0.4 vs 0.8/0.7 per episode), but had more
+intrusions (1.5 vs 1.2/0.8), 0.8 sector exits per episode and three timeouts.
+The context Transformer ranked fourth: mean events per episode were 0.9 intrusions,
+0.9 restricted-area entries and 0.1 sector exits; 2/10 episodes timed out.
+Mean restricted-area exposure was 186.5 s versus 73.0/60.2 s for additive attention
+and mean/max Transformer; mean time outside the sector was 271.2 s versus zero
+for both. Context Transformer training took 69.6 min. Its lower return does not
+identify the cause or establish whether a larger training budget would help.
+This single-seed comparison does not establish a general attention winner.
+Evidence: `experiments/results/attention_comparison/` (`summary.csv`, `paired.csv`,
+`runs.json` with per-run IDs), extended by
+`experiments/results/context_attention_comparison/` (`summary.csv`, `paired.csv`,
+`runs.json`, `report.md`). Context Transformer run ID:
+`policy_20261025T211839_db413510`.
+
 ## Temporal comparison
 
 All ten trials completed: single-agent PPO, seed 42, **100,352 actual steps** each,
@@ -144,6 +189,88 @@ Evidence: `experiments/results/temporal_comparison/` (`summary.csv`, `paired.csv
 `runs.json` with per-run IDs). Paired differences use each spatial model's own
 no-history baseline. This tests eight-frame windows at 100k steps, not all temporal
 settings or training budgets.
+
+## Reward ablation
+
+Single-agent PPO, entity MLP with all-context additive attention, seed 42,
+100,352 steps each, paired scenarios 2026–2035; same control setup as the
+architecture comparison. Each variant adds only one term to the base reward.
+
+| Added term | Weight | Base return | Completed |
+|---|---:|---:|---:|
+| **None** | 0 | **−148.27** | **10/10** |
+| Progress | 0.125 | −203.75 | 9/10 |
+| Predictive separation | 0.5 | −285.72 | 10/10 |
+| Obstacle clearance | 0.1 | −1,181.45 | 0/10 |
+| Sector clearance | 0.1 | −210.96 | 8/10 |
+| Time | 0.001 | −210.67 | 8/10 |
+| Smoothness | 0.001 | −228.05 | 10/10 |
+
+**Retain the base reward at these weights.** Base return subtracts added terms
+so objectives remain comparable. Predictive shaping reduced intrusion exposure
+from 75.7 to 68.5 s/episode but increased restricted-area exposure from 73.0 to
+134.8 s and outside-sector time from zero to 82.6 s. Obstacle shaping reduced
+restricted-area exposure to 21.0 s but completed no flights. Weight sensitivity
+and repeated training seeds remain untested.
+Evidence: `experiments/results/reward_ablation/` (`comparison.json`, `summary.csv`,
+`paired.csv`, `runs.json` with per-run IDs, `report.md`).
+
+## Multi-agent PPO comparison
+
+MLP actors/critics, training seed 42, paired scenarios 2026–2035 with ten aircraft:
+100,352 joint steps each (1,003,520 agent slots; valid transitions differ as
+flights finish). Shared PPO uses a shared actor/local critic, IPPO separate
+actors/local critics, and MAPPO a shared actor/centralized critic. All use the
+same masked collector and frozen evaluation normalization.
+
+| Method | Mean return | Completion | Intrusion s | Restricted s | Outside s | Training min |
+|---|---:|---:|---:|---:|---:|---:|
+| **Shared PPO** | **−217.21** | **100%** | **58.20** | **145.27** | **14.15** | 114.1 |
+| MAPPO | −331.59 | 92% | 124.04 | 189.21 | 17.89 | 114.4 |
+| IPPO | −407.01 | 77% | 101.84 | 244.15 | 59.63 | 130.2 |
+
+**Retain shared PPO as the comparison baseline.** It leads return, completion
+and all three exposure measures (seconds per aircraft episode). Safety violations
+remain. These single-seed results do not establish a general algorithm winner;
+parameter counts differ, and this collector/budget differs from the earlier
+SB3 PPO/SAC baseline. Evidence:
+`experiments/results/multi_agent_mlp_seed42_100k/` (`comparison.json`, `summary.csv`,
+`paired.csv`, `runs.json` with per-run IDs, `report.md`).
+
+### Additive-attention follow-up
+
+All three methods completed with training seed 42, paired scenarios 2026–2035
+and ten aircraft (100 aircraft episodes per method). Each trained for 100,352
+joint steps (1,003,520 agent slots), matching the MLP comparison. Actions,
+observations, base reward and no temporal history are unchanged. All methods use
+separate local actor/critic entity MLP encoders with all-context additive aircraft
+attention; MAPPO also uses focal-agent-conditioned additive attention over active
+agents in its centralized critic. Normalization is frozen during evaluation.
+
+| Method | Mean return | Completion | Intrusion s | Restricted s | Outside s | Training min |
+|---|---:|---:|---:|---:|---:|---:|
+| **Shared PPO** | **−162.28** | 99% | 58.04 | **94.02** | **10.71** | 96.6 |
+| MAPPO | −179.29 | **100%** | **33.48** | 126.16 | 20.19 | 101.2 |
+| IPPO | −361.97 | 65% | 72.12 | 239.87 | 48.73 | 121.1 |
+
+**Retain shared PPO as the return baseline; keep MAPPO as a safety/completion
+challenger.** MAPPO trails shared PPO by 17.01 return but completes every flight
+and has less intrusion exposure. Shared PPO has less restricted-area and
+outside-sector exposure. Safety violations remain for all methods.
+
+Attention improved observed return over each method's flat MLP result, with the
+same ranking. Completion changed from 100%/92%/77% to 99%/100%/65% for shared
+PPO/MAPPO/IPPO. This tests attention in both actors and critics, so it does not
+isolate their contributions. One training seed and shared scenarios do not
+establish a general attention or algorithm winner; aircraft episodes within a
+scenario are not independent trials.
+
+Evidence: `experiments/results/multi_agent_additive_seed42_100k/`
+(`comparison.json`, `summary.csv`, `paired.csv`, `runs.csv`, `report.md`). Run IDs:
+
+- Shared PPO: `policy_20261026T072127_99b81512`.
+- MAPPO: `policy_20261026T072127_ef154973`.
+- IPPO: `policy_20261026T072127_998fbc17`.
 
 ## Next experiments
 

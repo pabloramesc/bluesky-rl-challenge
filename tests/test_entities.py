@@ -63,6 +63,8 @@ class TrafficEnv(Env):
             ("mean_max", "ownship_goal"),
             ("additive_attention", "ownship_goal"),
             ("additive_attention", "all"),
+            ("ego_attention", "ownship_goal"),
+            ("ego_attention", "all"),
         ]
     ]
     + [
@@ -74,6 +76,8 @@ class TrafficEnv(Env):
             ("mean_max", "ownship_goal"),
             ("additive_attention", "ownship_goal"),
             ("additive_attention", "all"),
+            ("ego_attention", "ownship_goal"),
+            ("ego_attention", "all"),
             ("pma", "ownship_goal"),
         ]
     ],
@@ -183,6 +187,8 @@ def test_builders_and_policy_roundtrip(
         ("mean_max", "ownship_goal"),
         ("additive_attention", "ownship_goal"),
         ("additive_attention", "all"),
+        ("ego_attention", "ownship_goal"),
+        ("ego_attention", "all"),
     ],
 )
 @pytest.mark.parametrize("builder", [build_ppo, build_sac, build_td3, build_ddpg])

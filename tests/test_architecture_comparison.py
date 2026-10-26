@@ -23,7 +23,7 @@ from bluesky_pabloramesc.architecture_tree import (
 
 def test_default_tree_covers_all_spatial_pooling_and_attention_choices():
     variants = expand_tree(default_tree())
-    assert len(variants) == 24
+    assert len(variants) == 32
     assert variants[0].settings == {"architecture": "mlp", "temporal": "none"}
     assert {v.settings["architecture"] for v in variants} == {
         "mlp",
@@ -40,6 +40,7 @@ def test_default_tree_covers_all_spatial_pooling_and_attention_choices():
             "max",
             "mean_max",
             "additive_attention",
+            "ego_attention",
             *(["pma"] if architecture != "entity_mlp" else []),
         }
         assert {
@@ -58,7 +59,7 @@ def test_temporal_options_cross_every_spatial_leaf_and_history():
     variants = expand_tree(
         default_tree(("none", "frame_stack", "gru", "lstm", "tcn"), (1, 8))
     )
-    assert len(variants) == 24 * 9
+    assert len(variants) == 32 * 9
     assert all(
         "history_length" not in v.settings
         for v in variants
@@ -621,7 +622,7 @@ def test_dry_run_has_no_files_or_processes(tmp_path, monkeypatch, capsys):
     )
     assert comparison.run_architecture_comparison(args) == 0
     assert not args.output_dir.exists()
-    assert "24 variants" in capsys.readouterr().out
+    assert "32 variants" in capsys.readouterr().out
 
 
 def test_comparison_lock_prevents_concurrent_coordinators(tmp_path):
@@ -675,11 +676,66 @@ def test_architecture_cli_defaults_and_optional_temporal_tree(tmp_path, monkeypa
     )
     run_architecture_comparison_cli(["--output-dir", str(tmp_path / "out")])
     assert captured[0].jobs == 1 and captured[0].devices == ["cpu"]
-    assert len(comparison.comparison_plan(captured[0])[1]) == 24
+    assert len(comparison.comparison_plan(captured[0])[1]) == 32
     run_architecture_comparison_cli(
         ["--temporal", "none", "gru", "--history-lengths", "1", "8", "--jobs", "2"]
     )
-    assert len(comparison.comparison_plan(captured[1])[1]) == 72
+    assert len(comparison.comparison_plan(captured[1])[1]) == 96
+
+
+def test_attention_comparison_cli_selects_three_matched_variants(tmp_path, monkeypatch):
+    from bluesky_pabloramesc.cli import run_attention_comparison_cli
+
+    captured = []
+    monkeypatch.setattr(
+        comparison,
+        "run_architecture_comparison",
+        lambda args: captured.append(args) or 0,
+    )
+    run_attention_comparison_cli(["--seeds", "0", "1", "2", "--dry-run"])
+    args = captured[0]
+    assert args.output_dir.name == "attention_comparison"
+    assert args.temporal is None and args.seeds == [0, 1, 2]
+    _, variants, protocol = comparison.comparison_plan(args)
+    assert [(v.settings["architecture"], v.settings["pooling"]) for v in variants] == [
+        ("entity_mlp", "additive_attention"),
+        ("entity_mlp", "ego_attention"),
+        ("entity_transformer", "mean_max"),
+    ]
+    assert variants[0].settings["attention_context"] == "all"
+    assert variants[1].settings["attention_context"] == "all"
+    assert all(v.settings["temporal"] == "none" for v in variants)
+    assert protocol["eval_seeds"] == list(range(2026, 2036))
+    assert protocol["timesteps"] == 100_000
+    for variant in variants:
+        command = comparison.architecture_command(args, variant, 0, tmp_path, "cpu")
+        assert "--eval-seeds" in command and "--timesteps" in command
+        assert "--pooling" in command
+
+
+@pytest.mark.parametrize("flag", ["--tree", "--winning-architectures"])
+def test_attention_comparison_rejects_conflicting_presets(tmp_path, flag):
+    from bluesky_pabloramesc.cli import run_attention_comparison_cli
+
+    options = [flag, str(tmp_path / "tree.json")] if flag == "--tree" else [flag]
+    with pytest.raises(SystemExit) as error:
+        run_attention_comparison_cli([*options, "--dry-run"])
+    assert error.value.code == 2
+
+
+def test_attention_comparison_reports_and_reuses_three_variants(subprocess_experiment):
+    args, _, trace = subprocess_experiment
+    args.tree = None
+    args.attention_comparison = True
+    assert comparison.run_architecture_comparison(args) == 0
+    records = json.loads((args.output_dir / "runs.json").read_text())
+    assert len(records) == 6
+    assert all(row["status"] == "completed" for row in records)
+    assert "ego_attention_all" in (args.output_dir / "report.md").read_text()
+    before = trace.read_text()
+    args.resume = True
+    assert comparison.run_architecture_comparison(args) == 0
+    assert trace.read_text() == before
 
 
 def test_actual_training_subprocesses_aggregate_and_resume(tmp_path, monkeypatch):

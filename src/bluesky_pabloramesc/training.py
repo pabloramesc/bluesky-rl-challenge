@@ -3,6 +3,7 @@
 import json
 import warnings
 from datetime import datetime, timezone
+from functools import partial
 from importlib.metadata import version
 from pathlib import Path
 from shutil import copyfile
@@ -17,6 +18,7 @@ from stable_baselines3.common.vec_env import VecNormalize
 
 from .models import GAMMA
 from .reporting import EpisodeHistory, write_metadata
+from .rewards import RewardConfig
 
 EVAL_SEED = 2026
 
@@ -55,6 +57,39 @@ def control_config_path(model_path):
     """Locate the environment configuration saved beside a policy."""
     path, _ = checkpoint_paths(model_path)
     return path.with_name(f"{path.stem}_control.json")
+
+
+def reward_config_path(model_path):
+    """Locate the reward configuration beside a policy."""
+    path, _ = checkpoint_paths(model_path)
+    return path.with_name(f"{path.stem}_reward.json")
+
+
+def load_reward_config(model_path):
+    """Checkpoints predating reward engineering retain the unshaped reward."""
+    path = reward_config_path(model_path)
+    return (
+        RewardConfig(**json.loads(path.read_text()))
+        if path.is_file()
+        else RewardConfig()
+    )
+
+
+def checkpoint_reward_config(model_path, requested=None):
+    """Restore saved rewards and reject changes during resume or evaluation."""
+    saved = load_reward_config(model_path)
+    if requested is not None and requested != saved:
+        raise ValueError(
+            "Checkpoint reward configuration does not match requested settings"
+        )
+    return saved
+
+
+def validate_policy_reward_config(model, config):
+    """Detect missing or stale reward sidecars using the archive's copy."""
+    saved = RewardConfig(**getattr(model, "reward_config", {}))
+    if saved != config:
+        raise ValueError("Policy archive reward configuration does not match sidecar")
 
 
 def load_control_config(model_path):
@@ -120,6 +155,10 @@ def save_checkpoint(model, env, model_path):
     model_path, stats_path = checkpoint_paths(model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
     model.save(model_path)
+    if getattr(model, "reward_config", None) is not None:
+        reward_config_path(model_path).write_text(
+            json.dumps(model.reward_config, indent=2) + "\n"
+        )
     if getattr(model, "architecture_config", None) is not None:
         architecture_config_path(model_path).write_text(
             json.dumps(model.architecture_config, indent=2) + "\n"
@@ -152,6 +191,9 @@ def save_run_checkpoint(model, env, model_path, directory):
     if control_config_path(archived).is_file():
         sources.append(control_config_path(archived))
         targets.append(control_config_path(model_path))
+    if reward_config_path(archived).is_file():
+        sources.append(reward_config_path(archived))
+        targets.append(reward_config_path(model_path))
     if hasattr(model, "save_replay_buffer"):
         sources.append(replay_buffer_path(archived))
         targets.append(replay_buffer_path(model_path))
@@ -214,6 +256,12 @@ def record_training_progress(metadata, model, history, learning_started):
     metadata.setdefault("training_seconds", perf_counter() - learning_started)
     metadata["added_timesteps"] = model.num_timesteps - metadata["initial_timesteps"]
     metadata["actual_timesteps"] = model.num_timesteps
+    metadata["parameter_count"] = sum(
+        parameter.numel() for parameter in model.policy.parameters()
+    )
+    if hasattr(model, "active_timesteps"):
+        metadata["active_timesteps"] = model.active_timesteps
+        metadata["joint_steps"] = model.num_timesteps // model.n_agents
     metadata["training_episodes"] = len(history.rows)
     metadata["steps_per_second"] = metadata["added_timesteps"] / max(
         metadata["training_seconds"], 1e-9
@@ -298,9 +346,18 @@ def evaluate_scenarios(model, env, seeds):
                         final_infos[index] = {
                             key: float(value)
                             for key, value in info.items()
-                            if isinstance(value, (int, float, np.number))
+                            if not key.startswith("_")
+                            and isinstance(value, (int, float, np.number))
                         }
-                finished |= dones | np.array(
+                        final_infos[index].update(
+                            {
+                                f"reward_{name}": float(value)
+                                for name, value in info.get(
+                                    "reward_component_totals", {}
+                                ).items()
+                            }
+                        )
+                finished |= np.asarray(dones, dtype=bool) | np.array(
                     [bool(info.get("waypoint_reached", False)) for info in infos]
                 )
             for index, info in enumerate(final_infos):
@@ -336,6 +393,7 @@ def train(
     checkpoint_interval=10_000,
     control_config=None,
     evaluation_seeds=None,
+    reward_config=None,
 ):
     """Train or resume a policy, save its artifacts, and evaluate raw returns.
 
@@ -358,6 +416,8 @@ def train(
         checkpoint_interval: Additional steps between saves at rollout boundaries.
         control_config: Optional action/observation settings saved with every checkpoint.
         evaluation_seeds: Explicit scenario seeds; evaluate every agent once per seed.
+        reward_config: RewardConfig passed to the factory and saved with checkpoints.
+            Resume restores the saved configuration when omitted.
 
     Returns:
         Mean and standard deviation of final raw evaluation returns.
@@ -375,6 +435,10 @@ def train(
             raise ValueError("model_type is required when resuming training")
         source_model, source_stats = validate_checkpoint(resume_from, resume_stats_path)
         validate_control_config(source_model, control_config)
+        reward_config = checkpoint_reward_config(source_model, reward_config)
+    reward_config = reward_config or RewardConfig()
+    if reward_config != RewardConfig():
+        env_factory = partial(env_factory, reward_config=reward_config)
     started = datetime.now(timezone.utc)
     model_path, stats_path = checkpoint_paths(model_path)
     run_id = f"{model_path.stem}_{started:%Y%m%dT%H%M%S}_{uuid4().hex[:8]}"
@@ -382,6 +446,7 @@ def train(
     directory.mkdir(parents=True)
     history = EpisodeHistory(directory)
     metadata = {
+        "reward_config": reward_config.to_dict(),
         "control_config": control_config.to_dict()
         if control_config is not None
         else None,
@@ -432,6 +497,7 @@ def train(
             model = model_type.load(source_model, env=env, device=device)
             validate_policy_config(model, control_config)
             validate_architecture_config(model, source_model)
+            validate_policy_reward_config(model, reward_config)
             model.set_random_seed(seed)
             metadata["resumed_from"] = str(source_model.resolve())
             metadata["resumed_stats_from"] = str(source_stats.resolve())
@@ -450,11 +516,24 @@ def train(
                     model.learning_starts += model.num_timesteps
         if control_config is not None:
             model.control_config = control_config.to_dict()
-        from .entities import EntityGNN, EntityMLP, EntityTransformer
+        model.reward_config = reward_config.to_dict()
+        from .entities import (
+            ATTENTION_POOLING,
+            ContextEntityTransformer,
+            EntityGNN,
+            EntityMLP,
+            EntityTransformer,
+        )
 
         extractor = model.policy.features_extractor
         if extractor is None:
-            extractor = model.policy.actor.features_extractor
+            extractor = getattr(
+                getattr(model.policy, "actor", None), "features_extractor", None
+            )
+        if extractor is None and hasattr(model.policy, "learners"):
+            extractor = getattr(
+                model.policy.learners[0].actor, "features_extractor", None
+            )
         from .temporal import TemporalFeatures
 
         temporal_extractor = (
@@ -466,8 +545,12 @@ def train(
             "architecture": "entity_mlp" if isinstance(extractor, EntityMLP) else "mlp",
             "pooling": getattr(extractor, "pooling", "mean_max"),
         }
-        if isinstance(extractor, EntityTransformer):
-            model.architecture_config["architecture"] = "entity_transformer"
+        if isinstance(extractor, (EntityTransformer, ContextEntityTransformer)):
+            model.architecture_config["architecture"] = (
+                "context_entity_transformer"
+                if isinstance(extractor, ContextEntityTransformer)
+                else "entity_transformer"
+            )
             model.architecture_config["transformer_layers"] = (
                 extractor.transformer_layers
             )
@@ -483,7 +566,7 @@ def train(
             )
         if isinstance(extractor, EntityGNN) and extractor.graph == "knn":
             model.architecture_config["graph_k"] = extractor.graph_k
-        if getattr(extractor, "pooling", None) == "additive_attention":
+        if getattr(extractor, "pooling", None) in ATTENTION_POOLING:
             model.architecture_config["attention_context"] = extractor.attention_context
         if temporal_extractor is not None:
             model.architecture_config.update(
@@ -516,6 +599,10 @@ def train(
                         "n_epochs",
                         "gae_lambda",
                         "ent_coef",
+                        "vf_coef",
+                        "clip_range",
+                        "value_clip_range",
+                        "max_grad_norm",
                         "policy_delay",
                         "target_policy_noise",
                         "target_noise_clip",
@@ -599,6 +686,7 @@ def replay(
     stats_path=None,
     render_mode="human",
     control_config=None,
+    reward_config=None,
 ):
     """Evaluate a saved policy with frozen normalization and optional rendering.
 
@@ -612,6 +700,7 @@ def replay(
         stats_path: Explicit normalization file, or None to infer it.
         render_mode: Rendering mode, or None for headless evaluation.
         control_config: Requested settings, validated against the saved checkpoint.
+        reward_config: Requested rewards; saved rewards are restored when omitted.
 
     Returns:
         Mean and standard deviation of raw evaluation returns.
@@ -621,6 +710,9 @@ def replay(
     """
     model_path, stats_path = validate_checkpoint(model_path, stats_path)
     validate_control_config(model_path, control_config)
+    reward_config = checkpoint_reward_config(model_path, reward_config)
+    if reward_config != RewardConfig():
+        env_factory = partial(env_factory, reward_config=reward_config)
 
     base_env = env_factory(render_mode=render_mode)
     env = base_env
@@ -629,6 +721,7 @@ def replay(
         model = model_type.load(model_path, env=env, device=device)
         validate_policy_config(model, control_config)
         validate_architecture_config(model, model_path)
+        validate_policy_reward_config(model, reward_config)
         return evaluate(model, env, episodes, seed)
     finally:
         env.close()

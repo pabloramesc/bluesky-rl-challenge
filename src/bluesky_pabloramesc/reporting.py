@@ -9,6 +9,8 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from stable_baselines3.common.callbacks import BaseCallback
 
+from .rewards import COMPONENTS
+
 
 class EpisodeHistory(BaseCallback):
     """Record raw Monitor episode returns and produce a performance plot.
@@ -27,6 +29,7 @@ class EpisodeHistory(BaseCallback):
         super().__init__()
         self.directory = directory
         self.rows = []
+        self.reward_totals = {}
         self.started = perf_counter()
         self.fields = [
             "episode",
@@ -35,6 +38,7 @@ class EpisodeHistory(BaseCallback):
             "return",
             "length",
             "elapsed_seconds",
+            *(f"reward_{name}" for name in COMPONENTS),
         ]
         with (self.directory / "episodes.csv").open("w", newline="") as stream:
             csv.DictWriter(stream, fieldnames=self.fields).writeheader()
@@ -46,6 +50,8 @@ class EpisodeHistory(BaseCallback):
             True to continue training.
         """
         for index, info in enumerate(self.locals["infos"]):
+            if "reward_component_totals" in info:
+                self.reward_totals[index] = dict(info["reward_component_totals"])
             if "episode" not in info:
                 continue
             episode = info["episode"]
@@ -57,6 +63,12 @@ class EpisodeHistory(BaseCallback):
                 "length": int(episode["l"]),
                 "elapsed_seconds": perf_counter() - self.started,
             }
+            row.update(
+                {
+                    f"reward_{name}": float(value)
+                    for name, value in self.reward_totals.pop(index, {}).items()
+                }
+            )
             with (self.directory / "episodes.csv").open("a", newline="") as stream:
                 csv.DictWriter(stream, fieldnames=self.fields).writerow(row)
             self.rows.append(row)

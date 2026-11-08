@@ -104,12 +104,40 @@ Evidence: `experiments/results/decision_interval_comparison/` (`comparison.json`
 
 ## Architecture comparison
 
-The original 24 spatial variants completed: single-agent PPO, training seed 42,
-100,352 steps each, paired scenarios 2026–2035. Relative heading/absolute speed
-(100–500 kt), `goal_aligned_conflict` control observations, 10-second decisions;
-no temporal processing. Original Transformers/GNNs use one layer; GNNs are fully
-connected. The dual encoder was added in a separate matched comparison and uses
-two layers per branch; see the dual-encoder comparison below.
+Single-agent PPO, training seed 42, 100,000 requested / **100,352 actual steps**
+per variant, paired scenarios 2026–2035. Relative heading/absolute speed
+(100–500 kt), `goal_aligned_conflict` control observations, 10-second decisions,
+base reward and no temporal processing. The original grid contains 24 spatial
+variants; focused follow-ups add ego cross-attention, the context Transformer and
+the dual encoder. The context comparison reuses three attention references; the
+dual comparison reuses all four and trains only the new encoder. Original
+Transformers/GNNs use one layer and fully connected aircraft interactions; the
+dual encoder uses two layers per branch. These are matched-budget comparisons,
+with different parameter counts and compute costs.
+
+Architectures represented below:
+
+- **Flat MLP:** flattens all observation slots into a fixed-size input for the
+  policy/value networks; no explicit entity structure.
+- **Entity MLP, additive attention:** independently embeds each aircraft with a
+  shared MLP, then uses all non-aircraft context to weight and sum the embeddings.
+- **Entity MLP, ego cross-attention:** independently embeds aircraft, then uses one
+  four-head context query to read the set; aircraft do not exchange information.
+- **Transformer, mean/max:** aircraft self-attention models interactions before
+  concatenating mean and max pooling summaries.
+- **Context Transformer:** jointly attends over aircraft and a token encoding all
+  non-aircraft context; the updated context token supplies the summary.
+- **Dual Transformer:** separate traffic and obstacle Transformers each produce an
+  ownship/goal-conditioned context-token latent; both feed the policy/value MLPs.
+- **GCN, mean:** graph convolutions mix aircraft features across connected
+  neighbours, then mean pooling summarizes the graph.
+- **GAT, PMA:** graph attention learns neighbour weights, then pooling by multihead
+  attention uses a learned query to summarize the aircraft embeddings.
+
+Entity encoders combine their summaries with remaining raw context before the
+policy/value MLPs. Context tokens and aircraft embeddings have 64 features;
+Transformer attention uses four heads. All these models process the current
+observation without temporal memory.
 
 | Variant | Mean return | Completed |
 |---|---:|---:|
@@ -118,85 +146,42 @@ two layers per branch; see the dual-encoder comparison below.
 | GCN, mean pooling | −161.50 | 8/10 |
 | GAT, PMA pooling | −182.29 | **10/10** |
 | Dual Transformer, traffic/obstacle context-token branches | −222.70 | **10/10** |
+| Entity MLP, ego cross-attention (`all`) | −283.80 | 7/10 |
+| Context Transformer, context-token pooling | −520.95 | 8/10 |
 | Flat MLP baseline | −645.28 | 6/10 |
 
-**Shortlist the top two for repeated seeds**; their 0.18 return gap does not
-establish a winner. Entity MLP trained in 47.3 min versus 53.5 min for Transformer.
-Safety remains unresolved: respectively 1.2/0.8 intrusions and 0.8/0.7
-restricted-area entries per episode; neither had sector exits. Entity structure
+**Keep additive attention and mean/max Transformer shortlisted for repeated
+seeds.** Their 0.18 return gap does not establish a winner. Entity structure
 helped most variants, but attention was not consistently beneficial across models.
-Evidence: `experiments/results/architecture_comparison/` (`comparison.json`,
-`summary.csv`, `runs.json` with per-run IDs); variant paths above map to seed 42.
+Safety remains unresolved: the two leaders average 1.2/0.8 intrusions and 0.8/0.7
+restricted-area entries per episode, with no sector exits. Restricted-area
+exposure is 73.0/60.2 s per episode. They trained in 47.3/53.5 min in the original
+architecture grid.
 
-## Attention comparison
+Ego cross-attention reduced restricted-area entries to 0.4 per episode, but had
+1.5 intrusions, 0.8 sector exits and three timeouts. Its 39.9 s restricted-area
+exposure must be interpreted alongside 7/10 completions. The context Transformer
+averages 0.9 intrusions, 0.9 restricted-area entries and 0.1 sector exits;
+2/10 episodes timed out. Restricted-area exposure is 186.5 s and time outside the
+sector is 271.2 s, versus zero outside-sector time for both leaders. Context
+Transformer training took 69.6 min. Its lower return does not identify the cause
+or establish whether a larger training budget would help.
 
-Single-agent PPO, training seed 42, 100,352 steps per variant, paired scenarios
-2026–2035; same actions, observations and 10-second interval as the architecture
-comparison, with no temporal processing. Additive attention, ego cross-attention
-and the context Transformer use all context. The context comparison reuses the
-three completed reference runs and trains only the new context Transformer.
+### Dual-encoder follow-up
 
-| Variant | Mean return | Completed |
-|---|---:|---:|
-| Entity MLP, additive attention | **−148.27** | **10/10** |
-| Transformer, mean/max pooling | −148.44 | **10/10** |
-| Entity MLP, ego cross-attention | −283.80 | 7/10 |
-| Context Transformer, context-token pooling | −520.95 | 8/10 |
+Each independent traffic/obstacle branch uses two pre-norm blocks with four heads,
+64-dimensional tokens and a 128-unit feed-forward layer. Ownship/goal context
+conditions both latent readouts; obstacle slots use shared occupied-slot
+normalization. The model has 520,325 parameters. Reference hashes and all five
+focused-comparison evaluations were validated.
 
-Additive attention independently encodes each aircraft, then uses context to
-weight and sum the aircraft embeddings. The mean/max Transformer first applies
-self-attention between aircraft, then pools their updated embeddings. The context
-Transformer instead encodes the full non-aircraft context into a 64-feature token
-alongside the 64-feature aircraft tokens. One four-head, pre-normalized Transformer
-layer attends jointly over these tokens, masking absent aircraft. Its updated
-context token is concatenated with the raw context for the policy and value
-networks. This summarizes the current observation; it adds no temporal memory.
-
-**Keep additive attention and Transformer shortlisted.** Ego cross-attention
-reduced restricted-area entries (0.4 vs 0.8/0.7 per episode), but had more
-intrusions (1.5 vs 1.2/0.8), 0.8 sector exits per episode and three timeouts.
-The context Transformer ranked fourth: mean events per episode were 0.9 intrusions,
-0.9 restricted-area entries and 0.1 sector exits; 2/10 episodes timed out.
-Mean restricted-area exposure was 186.5 s versus 73.0/60.2 s for additive attention
-and mean/max Transformer; mean time outside the sector was 271.2 s versus zero
-for both. Context Transformer training took 69.6 min. Its lower return does not
-identify the cause or establish whether a larger training budget would help.
-This single-seed comparison does not establish a general attention winner.
-Evidence: `experiments/results/attention_comparison/` (`summary.csv`, `paired.csv`,
-`runs.json` with per-run IDs), extended by
-`experiments/results/context_attention_comparison/` (`summary.csv`, `paired.csv`,
-`runs.json`, `report.md`). Context Transformer run ID:
-`policy_20261025T211839_db413510`.
-
-## Dual-encoder comparison
-
-Single-agent PPO, training seed 42, 100,000 requested / **100,352 actual steps**,
-paired scenarios 2026–2035. Actions, observations, decision interval, PPO settings
-and base reward match the attention references. The runner reuses four completed
-reference results and trains only the dual encoder. Reference hashes and all five
-evaluations were validated.
-
-Traffic and obstacles have independent Transformers, each with two pre-norm
-blocks, four heads, 64-dimensional tokens and a 128-unit feed-forward layer.
-An ownship/goal context token produces each 64-feature latent. Both latents and
-remaining raw context feed separate actor/critic MLPs; obstacle slots use shared
-occupied-slot normalization. There is no temporal memory. The model has 520,325
-parameters; depth and parameter count differ from the reference models.
-
-| Variant | Mean return | Completed | Intrusions/episode | Restricted-area time/episode |
-|---|---:|---:|---:|---:|
-| Entity MLP, additive attention | **−148.27** | **10/10** | 1.2 | 73.0 s |
-| Transformer, mean/max pooling | −148.44 | **10/10** | **0.8** | **60.2 s** |
-| Dual Transformer | −222.70 | **10/10** | 1.6 | 107.9 s |
-| Entity MLP, ego cross-attention | −283.80 | 7/10 | 1.5 | 39.9 s |
-| Context Transformer | −520.95 | 8/10 | 0.9 | 186.5 s |
-
-**Retain the original two shortlisted architectures.** The dual encoder ranks
-third of five and wins only 3/10 paired scenarios against additive attention.
-Its mean paired return difference is −74.44, with 33% more intrusions and 48%
-more restricted-area exposure. It has no timeouts or sector exits. Mean flight
-time is 1,078.1 s versus 1,046.6 s for additive attention. Scenario 2035 contributes
-a −447.33 paired difference; excluding it still leaves a −33.00 mean difference.
+The dual encoder ranks third of five in the focused attention comparison and
+wins only 3/10 paired scenarios against additive attention. Its mean paired return
+difference is −74.44, with 1.6 intrusions and 107.9 s restricted-area exposure per
+episode: 33% and 48% more than additive attention. It completes 10/10 scenarios
+without timeouts or sector exits. Mean flight time is 1,078.1 s versus 1,046.6 s.
+Scenario 2035 contributes a −447.33 paired difference; excluding it still leaves
+a −33.00 mean difference.
 
 Recorded training time is 62.7 min versus 44.1 min for the reused additive
 reference (42% longer). These runs used one versus three concurrent jobs, so
@@ -210,10 +195,21 @@ investigate PPO update settings separately before expanding the model. One
 training seed does not establish a general ranking; reported zero seed SD is
 not an uncertainty estimate.
 
-Evidence: `experiments/results/dual_encoder_comparison/` (`comparison.json`,
-`summary.csv`, `episodes.csv`, `paired.csv`, `runs.json`, `report.md`), plus the
-successful run's `progress.csv`. Run ID: `policy_20261108T202240_66fdadf5`, seed 42,
-attempt 2; the interrupted first attempt is excluded.
+Evidence:
+
+- `experiments/results/architecture_comparison/`: original 24-variant grid;
+  `comparison.json`, `summary.csv` and `runs.json` with per-run IDs.
+- `experiments/results/attention_comparison/`: additive attention, ego
+  cross-attention and mean/max Transformer; `summary.csv`, `paired.csv` and
+  `runs.json` with per-run IDs.
+- `experiments/results/context_attention_comparison/`: context-token extension;
+  `summary.csv`, `paired.csv`, `runs.json` and `report.md`. Context Transformer
+  run ID: `policy_20261025T211839_db413510`.
+- `experiments/results/dual_encoder_comparison/`: dual-encoder extension;
+  `comparison.json`, `summary.csv`, `episodes.csv`, `paired.csv`, `runs.json`,
+  `report.md` and the successful run's `progress.csv`. Run ID:
+  `policy_20261108T202240_66fdadf5`, seed 42, attempt 2; the interrupted first
+  attempt is excluded.
 
 ## Temporal comparison
 

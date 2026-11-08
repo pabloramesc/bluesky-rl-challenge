@@ -8,6 +8,7 @@ from stable_baselines3.common.noise import NormalActionNoise
 from .entities import (
     ATTENTION_CONTEXTS,
     ATTENTION_POOLING,
+    CONTEXT_TOKEN_ARCHITECTURES,
     GNN_TYPES,
     GRAPH_TYPES,
     POOLING_METHODS,
@@ -145,12 +146,12 @@ def architecture_settings(
     if pooling is None:
         pooling = (
             "context_token"
-            if architecture == "context_entity_transformer"
+            if architecture in CONTEXT_TOKEN_ARCHITECTURES
             else "mean_max"
         )
-    if (pooling == "context_token") != (architecture == "context_entity_transformer"):
+    if (pooling == "context_token") != (architecture in CONTEXT_TOKEN_ARCHITECTURES):
         raise ValueError(
-            "context_entity_transformer requires context_token pooling exclusively"
+            "Context-token Transformer architectures require context_token pooling exclusively"
         )
     if pooling not in POOLING_METHODS:
         raise ValueError(f"Unknown pooling: {pooling}")
@@ -180,6 +181,7 @@ def architecture_settings(
         return policy_kwargs
     from .entities import (
         ContextEntityTransformer,
+        DualEntityTransformer,
         EntityGNN,
         EntityMLP,
         EntityTransformer,
@@ -192,6 +194,7 @@ def architecture_settings(
             "entity_mlp": EntityMLP,
             "entity_transformer": EntityTransformer,
             "context_entity_transformer": ContextEntityTransformer,
+            "dual_entity_transformer": DualEntityTransformer,
             "entity_gnn": EntityGNN,
         }[architecture],
         "features_extractor_kwargs": {

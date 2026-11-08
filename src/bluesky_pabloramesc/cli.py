@@ -7,7 +7,7 @@ from pathlib import Path
 
 from stable_baselines3 import DDPG, PPO, SAC, TD3
 
-from .entities import TRANSFORMER_ARCHITECTURES
+from .entities import CONTEXT_TOKEN_ARCHITECTURES, TRANSFORMER_ARCHITECTURES
 from .ippo import IPPO
 from .mappo import MAPPO
 from .models import (
@@ -225,10 +225,7 @@ def parse_args(algorithm, multi_agent=False, argv=None):
     ):
         parser.error("--history-length requires a temporal encoder")
     saved_architecture.setdefault("transformer_layers", 1)
-    if (
-        parsed.mode == "train"
-        and requested_architecture == "context_entity_transformer"
-    ):
+    if parsed.mode == "train" and requested_architecture in CONTEXT_TOKEN_ARCHITECTURES:
         saved_architecture["pooling"] = "context_token"
     for key in (
         "architecture",
@@ -248,10 +245,10 @@ def parse_args(algorithm, multi_agent=False, argv=None):
             parser.error("checkpoint architecture settings cannot be overridden")
         setattr(parsed, key, value if value is not None else saved_architecture[key])
     if (parsed.pooling == "context_token") != (
-        parsed.architecture == "context_entity_transformer"
+        parsed.architecture in CONTEXT_TOKEN_ARCHITECTURES
     ):
         parser.error(
-            "context_entity_transformer requires context_token pooling exclusively"
+            "Context-token Transformer architectures require context_token pooling exclusively"
         )
     if parsed.architecture == "mlp" and parsed.pooling != "mean_max":
         parser.error("--pooling requires an entity architecture")
@@ -381,6 +378,8 @@ def run_cli(algorithm, multi_agent=False):
 
     if args.architecture != "mlp":
         env_factory = partial(env_factory, entity_observations=True)
+        if args.architecture == "dual_entity_transformer":
+            env_factory = partial(env_factory, obstacle_observations=True)
         if args.architecture == "entity_gnn" and args.graph == "distance":
             env_factory = partial(env_factory, graph_radius_nm=args.graph_radius_nm)
         if args.architecture == "entity_gnn" and args.graph == "knn":
@@ -716,19 +715,40 @@ def run_context_attention_comparison_cli(argv=None):
     """Train only context-token attention, inheriting the reference run protocol."""
     from .context_attention_comparison import run_context_attention_comparison
 
+    _run_reference_comparison_cli(
+        argv,
+        run_context_attention_comparison,
+        "context_attention_comparison",
+        "attention_comparison",
+    )
+
+
+def run_dual_encoder_comparison_cli(argv=None):
+    """Train only the dual encoder and reuse completed architecture results."""
+    from .dual_encoder_comparison import run_dual_encoder_comparison
+
+    _run_reference_comparison_cli(
+        argv,
+        run_dual_encoder_comparison,
+        "dual_encoder_comparison",
+        "context_attention_comparison",
+    )
+
+
+def _run_reference_comparison_cli(argv, runner, name, reference):
     parser = argparse.ArgumentParser(
-        description="Train context-token attention and reuse the three completed attention variants"
+        description="Train one new architecture and reuse completed reference variants"
     )
     parser.add_argument(
         "--reference-dir",
         type=Path,
-        default=Path("experiments/results/attention_comparison"),
-        help="completed attention comparison; read only, never retrained",
+        default=Path("experiments/results") / reference,
+        help="completed single-agent PPO architecture comparison; read only, never retrained",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("experiments/results/context_attention_comparison"),
+        default=Path("experiments/results") / name,
     )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
@@ -742,7 +762,7 @@ def run_context_attention_comparison_cli(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
-        status = run_context_attention_comparison(args)
+        status = runner(args)
     except (ValueError, OSError, KeyError) as error:
         parser.error(str(error))
     if status:

@@ -534,6 +534,71 @@ for the new architecture; prior attempts remain available. `--timeout SECONDS`
 optionally limits each new training/evaluation subprocess. Seeds, budgets and
 control settings cannot be overridden through this entry point.
 
+### Dual-encoder Transformer comparison
+
+The dual encoder summarizes traffic and obstacles with separate Transformers.
+Each receives an ownship/goal context token, uses two pre-norm blocks with
+64-dimensional tokens, four attention heads and 128-unit feed-forward layers,
+and returns a 64-feature latent. The latents and remaining raw context feed
+the existing 256×256 actor and critic MLPs, with independent parameters.
+Entity slot order does not affect the output. Empty sets retain the context token.
+Obstacle masks are generated before normalization, and obstacle statistics are
+shared across occupied slots, saved with the policy and frozen for evaluation.
+
+Preview and run against the completed four-variant comparison:
+
+```bash
+python -m experiments.compare_dual_encoder --dry-run
+python -m experiments.compare_dual_encoder
+```
+
+The default reference is `experiments/results/context_attention_comparison`.
+Only the dual encoder trains; the four existing results are read-only. The runner
+inherits training/evaluation seeds, requested and actual budgets, control settings,
+device and thread count, validates matching PPO settings and base rewards, and
+records hashes of reference evidence. With the current references, this means
+seed 42, 100,000 requested transitions (100,352 actual), and scenarios 2026–2035.
+This adds an architecture result; its parameter count and compute differ from the
+one-layer reference models.
+
+Outputs go to `experiments/results/dual_encoder_comparison/`: `report.md` contains
+the combined architecture table; `summary.csv`, `episodes.csv`, `paired.csv`, and
+`comparison.png` use the existing architecture-report format. Copy the validated
+dual-encoder row into your research comparison table after the run completes.
+The runner does not edit research tables automatically.
+
+Interactive single-job comparisons display a terminal training progress bar,
+updated from the worker's `progress.csv` after each logged rollout (normally
+2,048 transitions for PPO). The bar stays at 100% while the worker finishes
+training/evaluation. Full worker output remains in `process.log`; redirected or
+non-interactive runs omit the terminal bar. Existing running processes must finish
+or restart before they can use an updated runner.
+
+```bash
+python -m experiments.compare_dual_encoder --resume
+python -m experiments.compare_dual_encoder --resume --retry-failed
+```
+
+`--reference-dir` may select another completed, matched single-agent PPO architecture
+comparison, such as `experiments/results/attention_comparison`; `--output-dir`
+must be separate and non-nested. `--timeout SECONDS` limits the new subprocess.
+Failed attempts are preserved; missing or mismatched references never trigger
+reference retraining. Seeds, budgets and control settings cannot be overridden
+through this entry point.
+
+For a fresh run without reference results, use the general comparison runner:
+
+```bash
+python -m experiments.compare_architectures --tree experiments/configs/dual_encoder.json --seeds 42 --output-dir experiments/results/dual_encoder_fresh
+```
+
+The same leaf can be added to a custom architecture tree. The original default
+32-variant tree remains unchanged. For standalone training:
+
+```bash
+python -m experiments.train_single_ppo --architecture dual_entity_transformer --transformer-layers 2 --heading-action relative --speed-action absolute --speed-min 100 --speed-max 500 --observation-profile control --observation-encoding goal_aligned_conflict --model-path experiments/models/ppo_dual_transformer
+```
+
 ### Architecture comparisons
 
 Preview the complete experiment plan before training:

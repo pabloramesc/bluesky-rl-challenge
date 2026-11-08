@@ -1,5 +1,6 @@
 """Schedule architecture-tree leaves as bounded, isolated training subprocesses."""
 
+import csv
 import fcntl
 import json
 import math
@@ -11,6 +12,8 @@ from contextlib import contextmanager
 from numbers import Real
 from pathlib import Path
 from time import perf_counter, sleep
+
+from tqdm import tqdm
 
 from .actions import ControlConfig
 from .architecture_reporting import write_architecture_report
@@ -319,6 +322,44 @@ def _interrupt_handler(signum, frame):
     raise KeyboardInterrupt
 
 
+class _TrainingProgress:
+    """Display recorded rollout steps while the worker keeps its full log."""
+
+    def __init__(self, record, total):
+        self.directory = Path(record["directory"])
+        self.last_read = -float("inf")
+        self.bar = tqdm(
+            total=total,
+            desc=f"{record['variant'].split('/')[-1]}, seed {record['training_seed']}",
+            unit="step",
+            disable=None,
+        )
+
+    def update(self, force=False):
+        if self.bar.disable or (not force and perf_counter() - self.last_read < 1):
+            return
+        self.last_read = perf_counter()
+        steps = 0
+        for path in (self.directory / "reports").glob("*/progress.csv"):
+            # SB3 may be rewriting the CSV as new metric columns appear.
+            try:
+                with path.open() as stream:
+                    for row in csv.DictReader(stream):
+                        try:
+                            steps = max(steps, int(float(row["time/total_timesteps"])))
+                        except (KeyError, TypeError, ValueError, OverflowError):
+                            continue
+            except OSError:
+                continue
+        self.bar.update(max(0, min(steps, self.bar.total) - self.bar.n))
+        if steps >= self.bar.total:
+            self.bar.set_postfix_str("finishing training/evaluation")
+
+    def close(self):
+        self.update(force=True)
+        self.bar.close()
+
+
 def _schedule(
     args,
     variants,
@@ -334,6 +375,7 @@ def _schedule(
     evaluation_reader = evaluation_reader or _evaluation
     slots = deque(range(args.jobs))
     active = {}
+    progress = {}
     by_name = {variant.name: variant for variant in variants}
     interrupted = False
     environment = os.environ.copy()
@@ -380,9 +422,13 @@ def _schedule(
                         f"Started {variant.name}, seed {record['training_seed']} on {device}; log: {record['log_path']}",
                         flush=True,
                     )
+                    if args.jobs == 1:
+                        progress[slot] = _TrainingProgress(record, args.timesteps)
                 _write_json(state, records)
             changed = False
             for slot, (process, record, started) in list(active.items()):
+                if slot in progress:
+                    progress[slot].update()
                 timed_out = (
                     args.timeout is not None
                     and perf_counter() - started >= args.timeout
@@ -414,6 +460,8 @@ def _schedule(
                     record.setdefault(
                         "error", f"Training exited with code {process.returncode}"
                     )
+                if slot in progress:
+                    progress.pop(slot).close()
                 print(
                     f"{record['status'].capitalize()}: {record['variant']}, seed {record['training_seed']}",
                     flush=True,
@@ -435,6 +483,8 @@ def _schedule(
                 returncode=process.returncode,
                 wall_seconds=perf_counter() - started,
             )
+        for display in progress.values():
+            display.close()
         _write_json(state, records)
     return interrupted
 

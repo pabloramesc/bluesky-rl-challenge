@@ -13,6 +13,7 @@ def make_env(
     graph_k=None,
     history_length=None,
     reward_config=None,
+    obstacle_observations=False,
 ):
     """Create a monitored single-aircraft environment with flat observations.
 
@@ -45,6 +46,7 @@ def make_env(
             self.graph_k = graph_k
             self.graph_radius_nm = graph_radius_nm
             self.entity_observations = entity_observations
+            self.obstacle_observations = obstacle_observations
             self.control_config = control_config or ControlConfig()
             self.reward_config = reward_config or RewardConfig()
             super().__init__(
@@ -55,6 +57,7 @@ def make_env(
                 self.observation_space,
                 self.control_config,
                 entity_observations,
+                **({"obstacle_observations": True} if obstacle_observations else {}),
                 **({"graph_k": graph_k} if graph_k is not None else {}),
                 **(
                     {"graph_radius_nm": graph_radius_nm}

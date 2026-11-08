@@ -520,6 +520,7 @@ def train(
         from .entities import (
             ATTENTION_POOLING,
             ContextEntityTransformer,
+            DualEntityTransformer,
             EntityGNN,
             EntityMLP,
             EntityTransformer,
@@ -553,6 +554,11 @@ def train(
             )
             model.architecture_config["transformer_layers"] = (
                 extractor.transformer_layers
+            )
+        if isinstance(extractor, DualEntityTransformer):
+            model.architecture_config.update(
+                architecture="dual_entity_transformer",
+                transformer_layers=extractor.transformer_layers,
             )
         if isinstance(extractor, EntityGNN):
             model.architecture_config.update(

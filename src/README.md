@@ -23,6 +23,8 @@ Put reusable code in `bluesky_pabloramesc/` and experiment entry points in
 | `architecture_reporting.py` | Architecture CSVs, seed-paired differences, ranked tables, and plots |
 | `architecture_comparison.py` | Bounded subprocess scheduling, resume/retry, logs, and report collection |
 | `context_attention_comparison.py` | New-only context-token training, read-only attention references, and matched combined reports |
+| `dual_encoder_comparison.py` | New-only traffic/obstacle Transformer comparison against completed architecture runs |
+| `reference_comparison.py` | Shared validation, provenance, scheduling and reporting for new-only comparisons |
 
 Add your own modules alongside these as needed. For example, after creating
 `agents.py`, import it with `from bluesky_pabloramesc.agents import MyAgent`.
@@ -82,6 +84,22 @@ four heads and configurable `--transformer-layers` (default 1). The updated cont
 token is concatenated with raw context for the policy/value heads. Its fixed
 `context_token` readout is selected automatically; empty traffic keeps the context
 token active. No aircraft slot positional embeddings are used.
+
+`--architecture dual_entity_transformer` uses independent traffic and obstacle
+Transformers. Each branch encodes entities into 64-dimensional tokens and prepends
+a token encoding ownship/goal features. Pre-norm self-attention with four heads
+and 128-unit feed-forward layers produces two 64-feature context-token latents.
+These latents and raw non-entity context (including sector features) feed separate
+actor/critic MLPs. Raw obstacle slots are excluded from that context. The fixed
+`context_token` readout is automatic; `--transformer-layers` controls both branches
+(default 1; the focused comparison uses 2). There are no slot positional embeddings,
+causal masks or temporal memory unless a temporal encoder is selected.
+
+This architecture enables `obstacle_observations=True` in the environment factory.
+`ControlHooks` creates binary obstacle presence before geometry conversion;
+`entity_layout` identifies polar or Cartesian obstacle tokens. Obstacle statistics
+are shared across occupied slots and saved/frozen with existing normalization.
+Existing architectures retain their original observation schemas and normalization.
 
 `--architecture entity_gnn` adds GCN/GAT message passing with configurable depth
 and graph connectivity. Fully connected graphs are the default; distance and

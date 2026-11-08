@@ -44,7 +44,7 @@
 - [ ] Compare procedural randomization ranges
 - [ ] Training above nominal traffic density
 - [ ] Hard-scenario mining and replay
-- [ ] Prioritized experience replay (SAC)
+- [ ] Prioritized experience replay (PER) for SAC
 
 ## 6. Multi-agent RL
 

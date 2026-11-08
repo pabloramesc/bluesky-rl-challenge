@@ -119,3 +119,16 @@ evaluation/resume, temporal integration, CLI dispatch and custom comparison tree
 launches, reference files remain unchanged, inherited protocols match, all four
 results appear in paired reports, and resume/retry never trains a reference.
 Missing, changed or mismatched evidence is rejected before reuse.
+
+## Dual-encoder Transformer checks
+
+`test_dual_transformer.py` covers obstacle masks across observation encodings,
+independent set permutations, branch isolation, ownship/goal conditioning, empty
+sets, finite gradients, occupied-slot normalization, frozen reloads, actor/critic
+separation, policy updates across SB3 builders, checkpoint evaluation/resume,
+temporal integration, CLI dispatch and architecture trees.
+
+`test_dual_encoder_comparison.py` checks read-only reference reuse, matched commands,
+five-row combined reports, resume/retry, rejected reference mismatches and a real
+training subprocess using a synthetic environment. The existing context-attention
+comparison tests also exercise the shared reference-comparison implementation.

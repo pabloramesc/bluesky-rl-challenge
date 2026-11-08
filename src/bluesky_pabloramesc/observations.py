@@ -108,13 +108,19 @@ def encode_geometry(observation, encoding, pos_norm=1_000_000, spd_norm=150):
 
 
 def extend_observation_space(
-    space, config, entity_observations=False, graph_radius_nm=None, graph_k=None
+    space,
+    config,
+    entity_observations=False,
+    graph_radius_nm=None,
+    graph_k=None,
+    obstacle_observations=False,
 ):
     """Append ownship state before flattening, preserving legacy spaces exactly."""
     if (
         config.observation_encoding == "upstream"
         and config.observation_profile == "legacy"
         and not entity_observations
+        and not obstacle_observations
     ):
         return space
     fields = dict(space.spaces)
@@ -135,6 +141,10 @@ def extend_observation_space(
     if entity_observations:
         fields["intruder_present"] = spaces.Box(
             0, 1, shape=fields["x_r"].shape, dtype=np.float64
+        )
+    if obstacle_observations:
+        fields["obstacle_present"] = spaces.Box(
+            0, 1, shape=fields["obstacle_radius"].shape, dtype=np.float64
         )
     if graph_radius_nm is not None or graph_k is not None:
         nodes = fields["x_r"].shape[0]
@@ -187,6 +197,12 @@ class ControlHooks:
 
     def _get_obs(self, ac_id):
         observation = super()._get_obs(ac_id)
+        if getattr(self, "obstacle_observations", False):
+            observation["obstacle_present"] = (
+                observation["obstacle_cos_bearing"] ** 2
+                + observation["obstacle_sin_bearing"] ** 2
+                > 0
+            ).astype(np.float64)
         encoding = self.control_config.observation_encoding
         if encoding == "conflict" or encoding.endswith("_conflict"):
             observation = encode_geometry(

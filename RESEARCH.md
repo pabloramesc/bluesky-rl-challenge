@@ -1,6 +1,6 @@
 # Research status
 
-Last reviewed: 2026-10-26. Run evidence: 2026-10-17–26 (Europe/Madrid).
+Last reviewed: 2026-11-08. Run evidence: 2026-10-17–2026-11-08 (Europe/Madrid).
 
 ## Current findings
 
@@ -20,6 +20,8 @@ Last reviewed: 2026-10-26. Run evidence: 2026-10-17–26 (Europe/Madrid).
   initial 5/10/20-second comparison, with mixed safety results and one training seed.
 - **Architectures:** entity MLP with all-context attention and Transformer with
   mean/max pooling nearly tie for best return; both complete 10/10 scenarios.
+  The dual traffic/obstacle Transformer completes 10/10 but trails both on return
+  and safety in the matched seed-42 comparison.
   Preliminary: one training seed, with safety violations remaining.
 - **Temporal models:** retain no-history policies at 100k steps; all eight
   temporal variants reduced return in the seed-42 comparison.
@@ -102,10 +104,12 @@ Evidence: `experiments/results/decision_interval_comparison/` (`comparison.json`
 
 ## Architecture comparison
 
-All 24 spatial variants completed: single-agent PPO, training seed 42,
+The original 24 spatial variants completed: single-agent PPO, training seed 42,
 100,352 steps each, paired scenarios 2026–2035. Relative heading/absolute speed
 (100–500 kt), `goal_aligned_conflict` control observations, 10-second decisions;
-no temporal processing. Transformers/GNNs use one layer; GNNs are fully connected.
+no temporal processing. Original Transformers/GNNs use one layer; GNNs are fully
+connected. The dual encoder was added in a separate matched comparison and uses
+two layers per branch; see the dual-encoder comparison below.
 
 | Variant | Mean return | Completed |
 |---|---:|---:|
@@ -113,6 +117,7 @@ no temporal processing. Transformers/GNNs use one layer; GNNs are fully connecte
 | Transformer, mean/max pooling | −148.44 | **10/10** |
 | GCN, mean pooling | −161.50 | 8/10 |
 | GAT, PMA pooling | −182.29 | **10/10** |
+| Dual Transformer, traffic/obstacle context-token branches | −222.70 | **10/10** |
 | Flat MLP baseline | −645.28 | 6/10 |
 
 **Shortlist the top two for repeated seeds**; their 0.18 return gap does not
@@ -162,6 +167,53 @@ Evidence: `experiments/results/attention_comparison/` (`summary.csv`, `paired.cs
 `experiments/results/context_attention_comparison/` (`summary.csv`, `paired.csv`,
 `runs.json`, `report.md`). Context Transformer run ID:
 `policy_20261025T211839_db413510`.
+
+## Dual-encoder comparison
+
+Single-agent PPO, training seed 42, 100,000 requested / **100,352 actual steps**,
+paired scenarios 2026–2035. Actions, observations, decision interval, PPO settings
+and base reward match the attention references. The runner reuses four completed
+reference results and trains only the dual encoder. Reference hashes and all five
+evaluations were validated.
+
+Traffic and obstacles have independent Transformers, each with two pre-norm
+blocks, four heads, 64-dimensional tokens and a 128-unit feed-forward layer.
+An ownship/goal context token produces each 64-feature latent. Both latents and
+remaining raw context feed separate actor/critic MLPs; obstacle slots use shared
+occupied-slot normalization. There is no temporal memory. The model has 520,325
+parameters; depth and parameter count differ from the reference models.
+
+| Variant | Mean return | Completed | Intrusions/episode | Restricted-area time/episode |
+|---|---:|---:|---:|---:|
+| Entity MLP, additive attention | **−148.27** | **10/10** | 1.2 | 73.0 s |
+| Transformer, mean/max pooling | −148.44 | **10/10** | **0.8** | **60.2 s** |
+| Dual Transformer | −222.70 | **10/10** | 1.6 | 107.9 s |
+| Entity MLP, ego cross-attention | −283.80 | 7/10 | 1.5 | 39.9 s |
+| Context Transformer | −520.95 | 8/10 | 0.9 | 186.5 s |
+
+**Retain the original two shortlisted architectures.** The dual encoder ranks
+third of five and wins only 3/10 paired scenarios against additive attention.
+Its mean paired return difference is −74.44, with 33% more intrusions and 48%
+more restricted-area exposure. It has no timeouts or sector exits. Mean flight
+time is 1,078.1 s versus 1,046.6 s for additive attention. Scenario 2035 contributes
+a −447.33 paired difference; excluding it still leaves a −33.00 mean difference.
+
+Recorded training time is 62.7 min versus 44.1 min for the reused additive
+reference (42% longer). These runs used one versus three concurrent jobs, so
+the timings do not isolate architecture cost.
+
+The last ten PPO updates average approximate KL 0.376 and clipping fraction
+0.607, versus 0.025 and 0.222 for additive attention. These indicate larger
+policy updates and motivate investigating optimization stability; they do not
+identify the cause of the evaluation gap. Compare a one-layer dual encoder and
+investigate PPO update settings separately before expanding the model. One
+training seed does not establish a general ranking; reported zero seed SD is
+not an uncertainty estimate.
+
+Evidence: `experiments/results/dual_encoder_comparison/` (`comparison.json`,
+`summary.csv`, `episodes.csv`, `paired.csv`, `runs.json`, `report.md`), plus the
+successful run's `progress.csv`. Run ID: `policy_20261108T202240_66fdadf5`, seed 42,
+attempt 2; the interrupted first attempt is excluded.
 
 ## Temporal comparison
 
@@ -285,6 +337,7 @@ Evidence: `experiments/results/multi_agent_additive_seed42_100k/`
 
 | Reviewed | Finding | Implication |
 |---|---|---|
+| 2026-11-08 | Dual traffic/obstacle Transformer ranks third of five: −222.70 return, 10/10 completions, with more intrusions and restricted-area exposure than both leaders. | Retain additive attention and mean/max Transformer; investigate dual-encoder PPO update stability and depth before further expansion. |
 | 2026-10-18 | Resuming single-agent PPO to 200,704 steps changed return from −432 to −661 ± 427 (`ppo_single_mlp_20261017T200828_e79e5ce6`). | Preserve the earlier policy; longer training needs validation. |
 | 2026-10-18 | PPO leads single-agent; SAC leads multi-agent in the baseline runs above. | Prioritize these candidates, pending repeated trials. |
 

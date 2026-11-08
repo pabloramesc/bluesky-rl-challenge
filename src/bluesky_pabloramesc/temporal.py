@@ -80,6 +80,7 @@ class HistoryRunningMeanStd(RunningMeanStd):
         layout = getattr(frame_space, "entity_layout", {})
         self.binary = (
             layout.get("mask", [])
+            + layout.get("obstacle_mask", [])
             + layout.get("graph_edges", [])
             + [space.shape[-1] - 1]
         )

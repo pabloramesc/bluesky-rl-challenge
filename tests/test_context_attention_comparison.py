@@ -121,7 +121,11 @@ def reference(tmp_path):
 @pytest.fixture
 def synthetic_worker(reference, monkeypatch, tmp_path):
     calls = []
-    options = {"fail": False, "mutation": {}}
+    options = {
+        "fail": False,
+        "mutation": {},
+        "architecture": "context_entity_transformer",
+    }
     template = json.loads(
         (
             reference.reference_dir / "runs" / "0" / "reports" / "run" / "run.json"
@@ -129,7 +133,7 @@ def synthetic_worker(reference, monkeypatch, tmp_path):
     )
 
     def command(args, variant, seed, directory, device):
-        assert variant.settings["architecture"] == "context_entity_transformer"
+        assert variant.settings["architecture"] == options["architecture"]
         assert args.timesteps == 100000 and seed == 42 and args.jobs == 1
         assert args.eval_seeds == list(range(2026, 2036))
         assert args.threads_per_job == 1 and device == "cpu"

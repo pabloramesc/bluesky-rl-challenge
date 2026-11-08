@@ -218,6 +218,7 @@ def make_vec_env(
     history_length=None,
     track_agents=False,
     reward_config=None,
+    obstacle_observations=False,
 ):
     """Create ten monitored agent slots backed by one BlueSky simulator.
 
@@ -251,6 +252,7 @@ def make_vec_env(
             self.graph_k = graph_k
             self.graph_radius_nm = graph_radius_nm
             self.entity_observations = entity_observations
+            self.obstacle_observations = obstacle_observations
             self.control_config = control_config or ControlConfig()
             self.reward_config = reward_config or RewardConfig()
             super().__init__(render_mode=render_mode, n_agents=N_AGENTS)
@@ -259,6 +261,9 @@ def make_vec_env(
                     space,
                     self.control_config,
                     entity_observations,
+                    **(
+                        {"obstacle_observations": True} if obstacle_observations else {}
+                    ),
                     **({"graph_k": graph_k} if graph_k is not None else {}),
                     **(
                         {"graph_radius_nm": graph_radius_nm}

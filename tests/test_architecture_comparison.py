@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from argparse import Namespace
+from io import StringIO
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,55 @@ from bluesky_pabloramesc.architecture_tree import (
     default_tree,
     expand_tree,
 )
+
+
+def test_terminal_progress_reads_rollouts_and_handles_partial_csv(
+    tmp_path, monkeypatch
+):
+    from tqdm import tqdm
+
+    output = StringIO()
+    monkeypatch.setattr(
+        comparison,
+        "tqdm",
+        lambda **kwargs: tqdm(**{**kwargs, "disable": False, "file": output}),
+    )
+    progress = comparison._TrainingProgress(
+        {"directory": str(tmp_path), "variant": "dual", "training_seed": 42}, 100
+    )
+    progress.update(force=True)
+    assert progress.bar.n == 0
+    path = tmp_path / "reports" / "policy" / "progress.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text("time/total_timesteps,train/loss\n40,1\n,\n")
+    progress.update(force=True)
+    assert progress.bar.n == 40
+    # Rewriting the CSV cannot move the displayed count backwards.
+    path.write_text("time/total_timesteps,train/loss\n")
+    progress.update(force=True)
+    assert progress.bar.n == 40
+    path.write_text("time/total_timesteps,train/loss\n104,1\n")
+    progress.close()
+    assert progress.bar.n == 100
+    assert "finishing training/evaluation" in output.getvalue()
+
+
+def test_terminal_progress_does_not_complete_a_failed_run(tmp_path, monkeypatch):
+    from tqdm import tqdm
+
+    monkeypatch.setattr(
+        comparison,
+        "tqdm",
+        lambda **kwargs: tqdm(**{**kwargs, "disable": False, "file": StringIO()}),
+    )
+    path = tmp_path / "reports" / "policy" / "progress.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text("time/total_timesteps\n40\n")
+    progress = comparison._TrainingProgress(
+        {"directory": str(tmp_path), "variant": "dual", "training_seed": 42}, 100
+    )
+    progress.close()
+    assert progress.bar.n == 40
 
 
 def test_default_tree_covers_all_spatial_pooling_and_attention_choices():

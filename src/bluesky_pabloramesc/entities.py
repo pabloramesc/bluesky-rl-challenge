@@ -1,4 +1,4 @@
-"""Aircraft set encoding and normalization independent of aircraft slot order."""
+"""Aircraft and obstacle set encoders with slot-shared normalization."""
 
 import numpy as np
 import torch
@@ -16,7 +16,11 @@ POOLING_METHODS = (
     "pma",
     "context_token",
 )
-TRANSFORMER_ARCHITECTURES = ("entity_transformer", "context_entity_transformer")
+CONTEXT_TOKEN_ARCHITECTURES = (
+    "context_entity_transformer",
+    "dual_entity_transformer",
+)
+TRANSFORMER_ARCHITECTURES = ("entity_transformer", *CONTEXT_TOKEN_ARCHITECTURES)
 ATTENTION_CONTEXTS = ("ownship_goal", "all")
 GNN_TYPES = ("gcn", "gat")
 GRAPH_TYPES = ("fully_connected", "distance", "knn")
@@ -36,7 +40,7 @@ AIRCRAFT_FIELDS = (
 
 
 def entity_layout(space):
-    """Locate aircraft columns, presence mask, and context in a flattened Dict."""
+    """Locate aircraft, optional obstacles, masks, and context in a flat Dict."""
     offsets = {}
     offset = 0
     for key, field in space.spaces.items():
@@ -50,6 +54,36 @@ def entity_layout(space):
     aircraft = np.array(fields).T.tolist()
     excluded = {index for field in fields for index in field} | set(mask)
     excluded.update(offsets.get("graph_adjacency", []))
+    obstacle_layout = {}
+    if "obstacle_present" in offsets:
+        obstacle_mask = offsets["obstacle_present"]
+        obstacle_fields = [
+            offsets[key]
+            for key in (
+                "obstacle_distance",
+                "obstacle_cos_bearing",
+                "obstacle_sin_bearing",
+                "obstacle_x",
+                "obstacle_y",
+                "obstacle_radius",
+            )
+            if key in offsets
+        ]
+        if not obstacle_fields or any(
+            len(field) != len(obstacle_mask) for field in obstacle_fields
+        ):
+            raise ValueError("Obstacle fields must have the same number of slots")
+        excluded.update(obstacle_mask)
+        obstacle_indices = {index for field in obstacle_fields for index in field}
+        obstacle_layout = {
+            "obstacles": np.array(obstacle_fields).T.tolist(),
+            "obstacle_mask": obstacle_mask,
+            "state_context": [
+                index
+                for index in range(offset)
+                if index not in excluded and index not in obstacle_indices
+            ],
+        }
     return {
         "aircraft": aircraft,
         "mask": mask,
@@ -62,6 +96,7 @@ def entity_layout(space):
             or key in ("airspeed", "cos_drift", "sin_drift")
             for index in indices
         ],
+        **obstacle_layout,
     }
 
 
@@ -342,6 +377,85 @@ class ContextEntityTransformer(EntityMLP):
         )
 
 
+class ContextSetEncoder(nn.Module):
+    """Encode an unordered entity set and read its ownship/goal context token."""
+
+    def __init__(self, entity_size, context_size, layers):
+        super().__init__()
+        self.entity_encoder = nn.Sequential(
+            nn.Linear(entity_size, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU()
+        )
+        self.context_encoder = nn.Sequential(
+            nn.Linear(context_size, 64), nn.ReLU(), nn.Linear(64, 64)
+        )
+        self.transformer = transformer_blocks(layers, norm_first=True)
+        self.output_norm = nn.LayerNorm(64)
+
+    def forward(self, entities, present, context):
+        entities = entities.masked_fill(~present.unsqueeze(-1), 0)
+        tokens = torch.cat(
+            [self.context_encoder(context).unsqueeze(1), self.entity_encoder(entities)],
+            dim=1,
+        )
+        padding = torch.cat([present.new_zeros((present.shape[0], 1)), ~present], dim=1)
+        for layer in self.transformer:
+            tokens = layer(tokens, src_key_padding_mask=padding)
+            tokens = tokens.masked_fill(padding.unsqueeze(-1), 0)
+        return self.output_norm(tokens[:, 0])
+
+
+class DualEntityTransformer(BaseFeaturesExtractor):
+    """Fuse independent traffic/obstacle latents with raw ownship and context."""
+
+    def __init__(
+        self,
+        observation_space,
+        layout,
+        pooling="context_token",
+        transformer_layers=1,
+    ):
+        if pooling != "context_token":
+            raise ValueError("Dual Transformer requires context_token pooling")
+        if not layout.get("obstacles") or not layout.get("obstacle_mask"):
+            raise ValueError("Dual Transformer requires obstacle observations and mask")
+        if not layout.get("ownship_goal"):
+            raise ValueError("Dual Transformer requires ownship/goal context")
+        super().__init__(observation_space, len(layout["state_context"]) + 128)
+        self.pooling = pooling
+        self.transformer_layers = transformer_layers
+        for name, indices in (
+            ("aircraft_indices", layout["aircraft"]),
+            ("mask_indices", layout["mask"]),
+            ("obstacle_indices", layout["obstacles"]),
+            ("obstacle_mask_indices", layout["obstacle_mask"]),
+            ("context_indices", layout["state_context"]),
+            ("query_indices", layout["ownship_goal"]),
+        ):
+            self.register_buffer(name, torch.tensor(indices, dtype=torch.long))
+        self.traffic_encoder = ContextSetEncoder(
+            len(layout["aircraft"][0]), len(layout["ownship_goal"]), transformer_layers
+        )
+        self.obstacle_encoder = ContextSetEncoder(
+            len(layout["obstacles"][0]), len(layout["ownship_goal"]), transformer_layers
+        )
+
+    def forward(self, observations):
+        context = observations[:, self.query_indices]
+        traffic = self.traffic_encoder(
+            observations[:, self.aircraft_indices],
+            observations[:, self.mask_indices] > 0.5,
+            context,
+        )
+        obstacles = self.obstacle_encoder(
+            observations[:, self.obstacle_indices],
+            observations[:, self.obstacle_mask_indices] > 0.5,
+            context,
+        )
+        return torch.cat(
+            [observations[:, self.context_indices], traffic, obstacles], dim=1
+        )
+
+
 class GraphConvolution(nn.Module):
     """GCN update with symmetric degree normalization and self-loop adjacency."""
 
@@ -466,17 +580,21 @@ class EntityGNN(EntityMLP):
 
 
 class EntityRunningMeanStd(RunningMeanStd):
-    """Tie each aircraft feature's statistics across occupied slots only."""
+    """Share each entity feature's statistics across occupied slots only."""
 
     def __init__(self, shape, layout):
         super().__init__(shape=shape)
         self.layout = layout
-        self.context_rms = RunningMeanStd(shape=(len(layout["context"]),))
+        self.context_rms = RunningMeanStd(
+            shape=(len(layout.get("state_context", layout["context"])),)
+        )
         self.aircraft_rms = RunningMeanStd(shape=(len(layout["aircraft"][0]),))
+        if "obstacles" in layout:
+            self.obstacle_rms = RunningMeanStd(shape=(len(layout["obstacles"][0]),))
 
     def update(self, observations):
         """Update context normally and aircraft using pooled occupied samples."""
-        context = self.layout["context"]
+        context = self.layout.get("state_context", self.layout["context"])
         aircraft = np.asarray(self.layout["aircraft"])
         present = observations[:, self.layout["mask"]] > 0.5
         self.context_rms.update(observations[:, context])
@@ -487,6 +605,14 @@ class EntityRunningMeanStd(RunningMeanStd):
         self.var[context] = self.context_rms.var
         self.mean[aircraft] = self.aircraft_rms.mean
         self.var[aircraft] = self.aircraft_rms.var
+        if "obstacles" in self.layout:
+            obstacles = np.asarray(self.layout["obstacles"])
+            present = observations[:, self.layout["obstacle_mask"]] > 0.5
+            samples = observations[:, obstacles][present]
+            if len(samples):
+                self.obstacle_rms.update(samples)
+            self.mean[obstacles] = self.obstacle_rms.mean
+            self.var[obstacles] = self.obstacle_rms.var
         self.count = self.context_rms.count
 
 
@@ -501,12 +627,20 @@ class EntityVecNormalize(VecNormalize):
 
     def _normalize_obs(self, obs, obs_rms):
         result = super()._normalize_obs(obs, obs_rms)
-        binary = obs_rms.layout["mask"] + obs_rms.layout.get("graph_edges", [])
+        binary = (
+            obs_rms.layout["mask"]
+            + obs_rms.layout.get("obstacle_mask", [])
+            + obs_rms.layout.get("graph_edges", [])
+        )
         result[..., binary] = obs[..., binary]
         return result
 
     def _unnormalize_obs(self, obs, obs_rms):
         result = super()._unnormalize_obs(obs, obs_rms)
-        binary = obs_rms.layout["mask"] + obs_rms.layout.get("graph_edges", [])
+        binary = (
+            obs_rms.layout["mask"]
+            + obs_rms.layout.get("obstacle_mask", [])
+            + obs_rms.layout.get("graph_edges", [])
+        )
         result[..., binary] = obs[..., binary]
         return result

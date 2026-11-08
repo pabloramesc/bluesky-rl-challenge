@@ -131,6 +131,11 @@ Transformer with the saved attention comparison's protocol and compare all four
 architectures. It imports the three completed reference results without retraining
 them. See the [context comparison guide](experiments/README.md#context-token-attention-comparison).
 
+Use `python -m experiments.compare_dual_encoder --dry-run` to preview the
+dual-branch traffic/obstacle Transformer comparison. It trains only the new
+architecture and combines its results with the four completed reference variants.
+See the [dual encoder guide](experiments/README.md#dual-encoder-transformer-comparison).
+
 See [experiments/README.md](experiments/README.md) for training details.
 Generated checkpoints and results are kept under `experiments/models/` and
 `experiments/results/`, ignored by Git. Each training run saves a unique report

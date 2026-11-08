@@ -1,0 +1,9 @@
+{
+  "name": "dual_encoder",
+  "settings": {
+    "architecture": "dual_entity_transformer",
+    "pooling": "context_token",
+    "transformer_layers": 2,
+    "temporal": "none"
+  }
+}

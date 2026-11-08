@@ -20,8 +20,16 @@ def make_env(
     graph_radius_nm=None,
     graph_k=None,
     history_length=None,
+    obstacle_observations=False,
 ):
     config = control_config or ControlConfig()
+    if obstacle_observations:
+        from test_dual_transformer import DualTrafficEnv
+
+        env = DummyVecEnv(
+            [lambda: Monitor(DualTrafficEnv(config.observation_encoding))]
+        )
+        return HistoryWindow(env, history_length) if history_length is not None else env
     graph = (
         "distance"
         if graph_radius_nm is not None

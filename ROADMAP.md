@@ -23,6 +23,9 @@
 - [x] Additive attention
 - [x] Entity Transformer (Set Transformer)
 - [x] Context-token Transformer
+- [x] Dual Transformer (traffic and obstacles)
+  - [ ] Try different depths
+  - [ ] Investigate PPO update stability
 - [x] Graph Neural Network (GCN and GAT)
 - [x] Fixed-window temporal modeling (LSTM, GRU, and TCN)
 

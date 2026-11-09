@@ -13,7 +13,7 @@
 - [x] Compare 5/10/20-second decision intervals
 - [x] Compare custom ego-centric/goal-relative features against the upstream baseline
 - [x] Add TCPA, DCPA, closing rate, and presence mask (`conflict` observation encoding)
-- [ ] Improve obstacle/sector geometry (nearest edge, ray casting)
+- [x] Implement and evaluate obstacle/sector geometry alternatives (nearest edge, ray casting)
 - [ ] Compare raw vs engineered features
 
 ## 3. Neural architectures

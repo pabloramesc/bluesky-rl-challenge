@@ -141,7 +141,7 @@ def parse_args(algorithm, multi_agent=False, argv=None):
     parser.add_argument("--observation-encoding", choices=OBSERVATION_ENCODINGS)
     parser.add_argument(
         "--geometry-representation",
-        choices=["current", "nearest_edge", "ray_cast", "both"],
+        choices=["current", "nearest_edge", "ray_cast", "both", "current_rays"],
     )
     parser.add_argument("--geometry-ray-count", type=positive_int)
     parser.add_argument("--geometry-ray-range-m", type=float)
@@ -804,6 +804,18 @@ def run_attention_geometry_comparison_cli(argv=None):
         argv,
         run_attention_geometry_comparison,
         "attention_geometry_comparison",
+        "attention_comparison",
+    )
+
+
+def run_attention_ray_comparison_cli(argv=None):
+    """Append rays to the default geometry and reuse the best PPO baseline."""
+    from .attention_geometry_comparison import run_attention_ray_comparison
+
+    _run_reference_comparison_cli(
+        argv,
+        run_attention_ray_comparison,
+        "attention_ray_comparison",
         "attention_comparison",
     )
 

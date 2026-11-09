@@ -33,7 +33,7 @@ def nearest_worker(reference, monkeypatch):
             "control_config": ControlConfig(
                 **{
                     **template["control_config"],
-                    "geometry_representation": "nearest_edge",
+                    "geometry_representation": variant.name,
                 }
             ).to_dict(),
             "evaluation_scenarios": [
@@ -220,3 +220,81 @@ def test_cli_defaults_to_known_attention_reference(monkeypatch):
     )
     with pytest.raises(SystemExit):
         run_attention_geometry_comparison_cli(["--timesteps", "200000"])
+
+
+def test_ray_followup_plan_appends_rays_and_reuses_default(reference, capsys):
+    before = snapshot(reference.reference_dir)
+    reference.dry_run = True
+    assert comparison.run_attention_ray_comparison(reference) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert len(plan["commands"]) == len(plan["reused_runs"]) == 1
+    assert plan["reused_runs"][0]["variant"] == "current"
+    command = plan["commands"][0]
+    for flag, value in {
+        "--geometry-representation": "current_rays",
+        "--geometry-ray-count": "24",
+        "--geometry-ray-range-m": "100000",
+        "--architecture": "entity_mlp",
+        "--pooling": "additive_attention",
+        "--attention-context": "all",
+        "--observation-encoding": "goal_aligned_conflict",
+        "--observation-profile": "control",
+        "--speed-action": "absolute",
+        "--seed": "42",
+        "--timesteps": "100000",
+    }.items():
+        assert command[command.index(flag) + 1] == value
+    controls = plan["protocol"]["control_configs"]
+    rays = controls["current_rays"]
+    assert ControlConfig(
+        **{**rays, "geometry_representation": "current"}
+    ) == ControlConfig(**controls["current"])
+    assert plan["protocol"]["eval_seeds"] == list(range(2026, 2036))
+    assert snapshot(reference.reference_dir) == before
+    assert not reference.output_dir.exists()
+
+
+def test_ray_followup_reports_and_resume(reference, nearest_worker):
+    calls, _ = nearest_worker
+    before = snapshot(reference.reference_dir)
+    assert comparison.run_attention_ray_comparison(reference) == 0
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--geometry-representation") + 1] == "current_rays"
+    runs = json.loads((reference.output_dir / "runs.json").read_text())
+    assert [r["variant"] for r in runs] == ["current", "current_rays"]
+    with (reference.output_dir / "paired.csv").open() as stream:
+        rays = next(
+            row for row in csv.DictReader(stream) if row["variant"] == "current_rays"
+        )
+    assert rays["baseline"] == "current" and float(rays["paired_difference"]) == 10
+    reference.resume = True
+    assert comparison.run_attention_ray_comparison(reference) == 0
+    assert len(calls) == 1
+    assert snapshot(reference.reference_dir) == before
+
+
+def test_ray_followup_rejects_replacement_geometry(reference, nearest_worker):
+    calls, options = nearest_worker
+    control = json.loads(baseline_report(reference).read_text())["control_config"]
+    options["mutation"] = {
+        "control_config": ControlConfig(
+            **{
+                **control,
+                "geometry_representation": "ray_cast",
+            }
+        ).to_dict()
+    }
+    assert comparison.run_attention_ray_comparison(reference) == 1
+    assert len(calls) == 1
+
+
+def test_ray_cli_has_separate_output_directory(monkeypatch):
+    from bluesky_pabloramesc.cli import run_attention_ray_comparison_cli
+
+    calls = []
+    monkeypatch.setattr(
+        comparison, "run_attention_ray_comparison", lambda args: calls.append(args) or 0
+    )
+    run_attention_ray_comparison_cli(["--dry-run"])
+    assert calls[0].reference_dir == Path("experiments/results/attention_comparison")
+    assert calls[0].output_dir == Path("experiments/results/attention_ray_comparison")

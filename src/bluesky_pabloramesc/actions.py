@@ -32,6 +32,7 @@ class ControlConfig:
             "nearest_edge",
             "ray_cast",
             "both",
+            "current_rays",
         ):
             raise ValueError("unknown geometry representation")
         if type(self.geometry_ray_count) is not int or self.geometry_ray_count <= 0:

@@ -1144,3 +1144,34 @@ Use `--resume` to reuse a completed nearest-edge run. After failure or interrupt
 previous attempt. `--timeout SECONDS` limits a new run's wall time. Changing the
 reference evidence is rejected on resume. The earlier four-way geometry results
 are preserved in their original directory.
+
+### Default geometry plus rays with additive-attention PPO
+
+Use this follow-up to **append** ray observations to the selected PPO's default
+geometry. `current_rays` retains every original encoded obstacle centre/radius,
+sector perimeter sample, and upstream sector occupancy flag. It adds 24 clockwise
+heading-relative rays with a 100 km maximum range: separate obstacle/sector
+distances and hit masks, plus obstacle occupancy to distinguish boundary exits.
+It does not add nearest-edge features or replace the original shape information.
+
+```bash
+python -m experiments.compare_attention_rays --dry-run
+python -m experiments.compare_attention_rays
+```
+
+Only `current_rays` trains. The completed default-geometry additive-attention PPO
+baseline is read from `experiments/results/attention_comparison/` and remains read
+only. Architecture, controls, base reward, PPO settings, training seed 42,
+100,000 requested / 100,352 actual steps, and all ten scenarios 2026–2035 match
+the baseline. Results and policy/normalization checkpoints go under
+`experiments/results/attention_ray_comparison/`, keeping both earlier geometry
+comparisons intact. Outputs include `summary.csv`, `paired.csv`, `episodes.csv`,
+`runs.json`, `comparison.png`, and `report.md`, with reference hashes and both
+control configurations in `comparison.json`.
+
+`--resume`, `--resume --retry-failed`, `--reference-dir`, `--output-dir`, and
+`--timeout` work as in the nearest-edge follow-up. For independent training runs,
+select `--geometry-representation current_rays` and optionally set
+`--geometry-ray-count` and `--geometry-ray-range-m`. The focused comparison uses
+fixed ray defaults. The original four-way `compare_geometry` command retains its
+four existing variants.

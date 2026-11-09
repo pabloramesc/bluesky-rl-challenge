@@ -6,27 +6,36 @@ from gymnasium import spaces
 from .geometry import nearest_boundary, ray_distances
 
 GEOMETRY_REPRESENTATIONS = ("current", "nearest_edge", "ray_cast", "both")
+GEOMETRY_CHOICES = (*GEOMETRY_REPRESENTATIONS, "current_rays")
 DISTANCE_SCALE_M = 100_000.0
 
 
 def boundary_space(fields, config, obstacle_tokens=False):
-    """Replace circle/perimeter fields with fixed-size boundary observations."""
+    """Replace or extend circle/perimeter fields with fixed-size observations."""
     if config.geometry_representation == "current":
         return fields
     nearest = config.geometry_representation in ("nearest_edge", "both")
-    if obstacle_tokens and not nearest:
-        raise ValueError("Obstacle token encoders require nearest_edge or both")
+    append_rays = config.geometry_representation == "current_rays"
+    if obstacle_tokens and not nearest and not append_rays:
+        raise ValueError(
+            "Obstacle token encoders require nearest_edge, both, or current_rays"
+        )
     count = fields["obstacle_radius"].shape[0]
-    result = {
-        key: field
-        for key, field in fields.items()
-        if not key.startswith(("obstacle_", "sector_point_"))
-    }
+    result = (
+        dict(fields)
+        if append_rays
+        else {
+            key: field
+            for key, field in fields.items()
+            if not key.startswith(("obstacle_", "sector_point_"))
+        }
+    )
 
     def add(key, size, low=-np.inf, high=np.inf):
         result[key] = spaces.Box(low, high, shape=(size,), dtype=np.float64)
 
-    add("inside_sector", 1, 0, 1)
+    if not append_rays:
+        add("inside_sector", 1, 0, 1)
     add("inside_obstacle", 1, 0, 1)
     if nearest:
         for key in ("obstacle_nearest_x", "obstacle_nearest_y", "obstacle_clearance"):
@@ -34,7 +43,7 @@ def boundary_space(fields, config, obstacle_tokens=False):
         add("obstacle_present", count, 0, 1)
         for key in ("sector_nearest_x", "sector_nearest_y", "sector_clearance"):
             add(key, 1)
-    if config.geometry_representation in ("ray_cast", "both"):
+    if config.geometry_representation in ("ray_cast", "both", "current_rays"):
         for prefix in ("obstacle", "sector"):
             add(f"{prefix}_ray_distance", config.geometry_ray_count, 0, 1)
             add(f"{prefix}_ray_hit", config.geometry_ray_count, 0, 1)
@@ -55,11 +64,12 @@ def boundary_features(geometry, position, heading, config, obstacle_count):
     forward = np.array([np.sin(angle), np.cos(angle)])
     right = np.array([np.cos(angle), -np.sin(angle)])
     result = {
-        "inside_sector": np.array([float(geometry.sector.covers(point))]),
         "inside_obstacle": np.array(
             [float(any(p.covers(point) for p in geometry.obstacles))]
         ),
     }
+    if config.geometry_representation != "current_rays":
+        result["inside_sector"] = np.array([float(geometry.sector.covers(point))])
     if config.geometry_representation in ("nearest_edge", "both"):
         for prefix, polygons, count, inside_positive in (
             ("obstacle", geometry.obstacles, obstacle_count, False),
@@ -81,7 +91,7 @@ def boundary_features(geometry, position, heading, config, obstacle_count):
             result[f"{prefix}_nearest_x"] = x
             result[f"{prefix}_nearest_y"] = y
             result[f"{prefix}_clearance"] = clearance
-    if config.geometry_representation in ("ray_cast", "both"):
+    if config.geometry_representation in ("ray_cast", "both", "current_rays"):
         angles = (
             np.arange(config.geometry_ray_count) * 2 * np.pi / config.geometry_ray_count
         )

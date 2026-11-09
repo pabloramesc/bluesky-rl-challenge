@@ -146,7 +146,10 @@ def extend_observation_space(
         fields["intruder_present"] = spaces.Box(
             0, 1, shape=fields["x_r"].shape, dtype=np.float64
         )
-    if obstacle_observations and config.geometry_representation == "current":
+    if obstacle_observations and config.geometry_representation in (
+        "current",
+        "current_rays",
+    ):
         fields["obstacle_present"] = spaces.Box(
             0, 1, shape=fields["obstacle_radius"].shape, dtype=np.float64
         )
@@ -205,9 +208,11 @@ class ControlHooks:
 
     def _get_obs(self, ac_id):
         observation = super()._get_obs(ac_id)
-        if (
-            getattr(self, "obstacle_observations", False)
-            and self.control_config.geometry_representation == "current"
+        if getattr(
+            self, "obstacle_observations", False
+        ) and self.control_config.geometry_representation in (
+            "current",
+            "current_rays",
         ):
             observation["obstacle_present"] = (
                 observation["obstacle_cos_bearing"] ** 2
@@ -237,11 +242,12 @@ class ControlHooks:
             position = local_meters(
                 (bs.traf.lat[index], bs.traf.lon[index]), self.scenario.center
             )
-            observation = {
-                key: value
-                for key, value in observation.items()
-                if not key.startswith(("obstacle_", "sector_point_"))
-            }
+            if self.control_config.geometry_representation != "current_rays":
+                observation = {
+                    key: value
+                    for key, value in observation.items()
+                    if not key.startswith(("obstacle_", "sector_point_"))
+                }
             observation.update(
                 boundary_features(
                     self._boundary_geometry,

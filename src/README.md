@@ -18,7 +18,7 @@ Put reusable code in `bluesky_pabloramesc/` and experiment entry points in
 | `reward_ablation.py` | Seven fixed-architecture baseline/add-one reward trials and paired behavior reports |
 | `geometry.py` | Closest approach, local metre projection, cached polygons, signed clearance, nearest boundary points, and finite ray intersections |
 | `boundary_observations.py` | Selectable nearest-edge, ray-cast, and combined obstacle/sector observations |
-| `attention_geometry_comparison.py` | Nearest-edge additive-attention PPO against the read-only completed default-geometry baseline |
+| `attention_geometry_comparison.py` | Nearest-edge and appended-ray additive-attention PPO follow-ups against the read-only default-geometry baseline |
 | `observations.py` | Geometry encodings, optional conflict features, ownship state, and shared environment hooks |
 | `comparison.py` | Isolated action/observation ablations and paired reports |
 | `architecture_tree.py` | Conditional architecture options, inherited settings, and Cartesian sweeps |

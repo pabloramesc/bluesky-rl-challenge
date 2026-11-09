@@ -151,3 +151,8 @@ reports, and actual synthetic worker training through the shared workflow.
 the completed additive-attention baseline remains unchanged, all controls and ten
 scenarios match, paired reports contain two variants, and resume/retry or metadata
 mismatches cannot trigger baseline retraining.
+
+The boundary and attention-geometry tests also cover `current_rays`: original
+geometry fields remain identical across encodings, sector occupancy is preserved,
+ray settings survive checkpoint reload, and only the augmented policy trains
+against the read-only baseline. Replacement-ray reports are rejected.

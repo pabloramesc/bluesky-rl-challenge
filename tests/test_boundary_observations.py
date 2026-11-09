@@ -11,7 +11,7 @@ from test_observations import geometry
 
 from bluesky_pabloramesc.actions import ControlConfig
 from bluesky_pabloramesc.boundary_observations import (
-    GEOMETRY_REPRESENTATIONS,
+    GEOMETRY_CHOICES,
     boundary_features,
 )
 from bluesky_pabloramesc.geometry import (
@@ -127,7 +127,7 @@ def test_empty_obstacles_remain_finite_and_explicit():
 
 
 @pytest.mark.parametrize("encoding", OBSERVATION_ENCODINGS)
-@pytest.mark.parametrize("representation", GEOMETRY_REPRESENTATIONS)
+@pytest.mark.parametrize("representation", GEOMETRY_CHOICES)
 @pytest.mark.parametrize("obstacle_tokens", [False, True])
 def test_hook_space_matches_observation_and_reset_invalidates_cache(
     monkeypatch, encoding, representation, obstacle_tokens
@@ -186,7 +186,8 @@ def test_hook_space_matches_observation_and_reset_invalidates_cache(
     obs = env.reset(scenario())
     assert space.contains(obs)
     if representation != "current":
-        assert "obstacle_radius" not in obs
+        if representation != "current_rays":
+            assert "obstacle_radius" not in obs
         cache = env._boundary_geometry
         obs = env.reset(scenario([[(-1, -1), (1, -1), (1, 1), (-1, 1)]]))
         assert env._boundary_geometry is not cache
@@ -203,7 +204,7 @@ def test_hook_space_matches_observation_and_reset_invalidates_cache(
             rms.update(flat[None])
             assert rms.obstacle_rms.count == pytest.approx(1.0001)
             np.testing.assert_array_equal(flat[layout["obstacle_mask"]], [1, 0])
-    else:
+    if representation in ("current", "current_rays"):
         encoded = encode_geometry(original(), encoding)
         for key, value in encoded.items():
             np.testing.assert_array_equal(obs[key], value)
@@ -224,14 +225,17 @@ def test_invalid_geometry_settings(settings):
         ControlConfig(**settings)
 
 
-def test_checkpoint_geometry_settings_reload_and_cannot_be_overridden(tmp_path):
+@pytest.mark.parametrize("representation", ["both", "current_rays"])
+def test_checkpoint_geometry_settings_reload_and_cannot_be_overridden(
+    tmp_path, representation
+):
     import json
 
     from bluesky_pabloramesc.cli import parse_args
     from bluesky_pabloramesc.training import control_config_path
 
     path = tmp_path / "policy"
-    config = ControlConfig(geometry_representation="both", geometry_ray_count=8)
+    config = ControlConfig(geometry_representation=representation, geometry_ray_count=8)
     control_config_path(path).write_text(json.dumps(config.to_dict()))
     args = parse_args("ppo", argv=["evaluate", "--model-path", str(path)])
     assert args.control_config == config
@@ -255,3 +259,22 @@ def test_current_defaults_preserve_legacy_metadata():
     alternative = ControlConfig(geometry_representation="nearest_edge")
     assert alternative.to_dict()["geometry_representation"] == "nearest_edge"
     assert ControlConfig(**alternative.to_dict()) == alternative
+
+
+def test_appended_rays_preserve_upstream_sector_occupancy():
+    features = boundary_features(
+        PolygonGeometry(scenario()),
+        (0, 0),
+        0,
+        ControlConfig(geometry_representation="current_rays"),
+        2,
+    )
+    assert "inside_sector" not in features
+    assert "obstacle_present" not in features
+    assert set(features) == {
+        "inside_obstacle",
+        "obstacle_ray_distance",
+        "obstacle_ray_hit",
+        "sector_ray_distance",
+        "sector_ray_hit",
+    }

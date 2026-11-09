@@ -142,7 +142,9 @@ See the [geometry comparison guide](experiments/README.md#obstacle-and-sector-ge
 for settings and paired evaluation commands. Use
 `python -m experiments.compare_attention_geometry --dry-run` to preview the
 focused best-PPO comparison: reuse the completed additive-attention baseline and
-train only nearest-edge geometry.
+train only nearest-edge geometry. To preserve default geometry and append rays,
+use `python -m experiments.compare_attention_rays --dry-run`; it also reuses the
+completed baseline.
 
 See [experiments/README.md](experiments/README.md) for training details.
 Generated checkpoints and results are kept under `experiments/models/` and

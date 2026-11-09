@@ -1,4 +1,4 @@
-"""Train nearest-edge PPO once against the completed additive-attention baseline."""
+"""Compare geometry changes against the completed additive-attention PPO baseline."""
 
 import json
 from argparse import Namespace
@@ -73,12 +73,15 @@ def attention_geometry_plan(args, new_variant, reference_tree=None):
         tuple(selected[0]["name"].split("/")), selected[0]["settings"]
     )
     baseline = ArchitectureVariant(("current",), dict(ATTENTION_ARCHITECTURE))
-    nearest = ArchitectureVariant((new_variant["name"],), dict(ATTENTION_ARCHITECTURE))
-    variants = [baseline, nearest]
+    representation = new_variant["name"]
+    if representation not in ("nearest_edge", "current_rays"):
+        raise ValueError("Only nearest_edge and current_rays follow-ups are supported")
+    candidate = ArchitectureVariant((representation,), dict(ATTENTION_ARCHITECTURE))
+    variants = [baseline, candidate]
     controls = {
         "current": control.to_dict(),
-        "nearest_edge": replace(
-            control, geometry_representation="nearest_edge"
+        representation: replace(
+            control, geometry_representation=representation
         ).to_dict(),
     }
     records = [
@@ -164,8 +167,8 @@ def attention_geometry_plan(args, new_variant, reference_tree=None):
 
 
 def attention_geometry_command(args, variant, seed, directory, device):
-    """Only the nearest-edge variant is eligible for training."""
-    if variant.name != "nearest_edge":
+    """Only new geometry variants are eligible for training."""
+    if variant.name not in ("nearest_edge", "current_rays"):
         raise ValueError(
             "The completed default-geometry baseline must never be retrained"
         )
@@ -185,7 +188,7 @@ def attention_geometry_command(args, variant, seed, directory, device):
             observation_encoding="goal_aligned_conflict",
             observation_profile="control",
             decision_interval=10,
-            geometry_representation="nearest_edge",
+            geometry_representation=variant.name,
         ),
         *setting_arguments(ATTENTION_ARCHITECTURE),
     ]
@@ -209,6 +212,18 @@ def run_attention_geometry_comparison(args):
         args,
         {"name": "nearest_edge", "settings": ATTENTION_ARCHITECTURE},
         label="Additive-attention geometry",
+        plan_builder=attention_geometry_plan,
+        command_builder=attention_geometry_command,
+        evaluation_reader=attention_geometry_evaluation,
+    )
+
+
+def run_attention_ray_comparison(args):
+    """Append rays to default geometry while reusing the completed baseline."""
+    return run_reference_comparison(
+        args,
+        {"name": "current_rays", "settings": ATTENTION_ARCHITECTURE},
+        label="Default geometry plus rays",
         plan_builder=attention_geometry_plan,
         command_builder=attention_geometry_command,
         evaluation_reader=attention_geometry_evaluation,

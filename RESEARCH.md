@@ -245,6 +245,28 @@ Evidence: `experiments/results/attention_geometry_comparison/` (`comparison.json
 `summary.csv`, `paired.csv`, `episodes.csv`, `runs.json`); nearest-edge run
 `policy_20261109T080428_ce1e00b8`.
 
+### Default geometry plus rays
+
+Same additive-attention PPO setup, seed 42, **100,352 steps**, and paired scenarios
+**2026–2035**; the default baseline was reused. `current_rays` preserves default
+geometry and appends 24 heading-relative obstacle/sector rays with 100 km range,
+hit masks and obstacle occupancy. Controls, PPO settings and base reward match.
+
+| Geometry | Mean return | Completed | Intrusion s | Restricted s | Outside s |
+|---|---:|---:|---:|---:|---:|
+| **Default** | **−148.27** | **10/10** | **75.7** | 73.0 | 0.0 |
+| Default + rays | −200.13 | 6/10 | 187.5 | **10.5** | 0.0 |
+
+Rays win 5/10 paired scenarios but reduce mean return by **51.87**. Restricted-area
+exposure falls 86%, while aircraft intrusion exposure increases and four flights
+time out. Mean flight time rises from 1,046.6 to 2,242.1 s. Exposure is mean seconds
+per episode and must be read alongside completion. **Retain default geometry**;
+ray augmentation improves obstacle avoidance but is not an overall improvement
+in this single-seed, 100k-step comparison.
+Evidence: `experiments/results/attention_ray_comparison/` (`comparison.json`,
+`summary.csv`, `paired.csv`, `episodes.csv`, `runs.json`); augmented run
+`policy_20261109T141045_32d05ed7`.
+
 ## Temporal comparison
 
 All ten trials completed: single-agent PPO, seed 42, **100,352 actual steps** each,

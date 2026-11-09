@@ -32,3 +32,58 @@ def signed_clearance(point, polygon, *, inside_positive):
     """Distance to polygon edges, positive on the requested safe side."""
     distance = point.distance(polygon.boundary)
     return distance if polygon.covers(point) == inside_positive else -distance
+
+
+class PolygonGeometry:
+    """Static scenario polygons in a shared east/north metre projection."""
+
+    def __init__(self, scenario):
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+
+        self.center = np.asarray(scenario.center, dtype=float)
+        self.sector = Polygon(local_meters(scenario.sector, self.center))
+        self.obstacles = [
+            Polygon(local_meters(obstacle.vertices, self.center))
+            for obstacle in scenario.obstacles
+        ]
+        for polygon in [self.sector, *self.obstacles]:
+            if polygon.is_empty or not polygon.is_valid or polygon.area <= 0:
+                raise ValueError(
+                    "Geometry observations require valid nonempty polygons"
+                )
+        self.obstacle_boundary = unary_union([p.boundary for p in self.obstacles])
+
+
+def nearest_boundary(point, polygon, *, inside_positive):
+    """Return displacement to the actual boundary and signed safe-side clearance."""
+    from shapely.ops import nearest_points
+
+    nearest = nearest_points(point, polygon.boundary)[1]
+    displacement = np.array([nearest.x - point.x, nearest.y - point.y])
+    return displacement, signed_clearance(
+        point, polygon, inside_positive=inside_positive
+    )
+
+
+def ray_distances(point, boundary, directions, max_range):
+    """Intersect finite unit-direction rays, including tangencies and overlaps.
+
+    No hit returns max_range and a false mask. A boundary origin returns zero;
+    from an unsafe position a hit can be an exit, so retain occupancy separately.
+    """
+    from shapely.geometry import LineString
+
+    directions = np.asarray(directions, dtype=float)
+    origin = np.array([point.x, point.y])
+    distances = np.full(len(directions), float(max_range))
+    hits = np.zeros(len(directions), dtype=np.float64)
+    if boundary.is_empty:
+        return distances, hits
+    for index, direction in enumerate(directions):
+        ray = LineString([origin, origin + max_range * direction])
+        intersection = ray.intersection(boundary)
+        if not intersection.is_empty:
+            distances[index] = min(max_range, point.distance(intersection))
+            hits[index] = 1
+    return distances, hits

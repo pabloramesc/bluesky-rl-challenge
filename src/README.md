@@ -16,7 +16,9 @@ Put reusable code in `bluesky_pabloramesc/` and experiment entry points in
 | `actions.py` | Validated action configuration and heading/CAS target mappings |
 | `rewards.py` | Configurable progress, predictive separation, clearance, time, and command-smoothness rewards |
 | `reward_ablation.py` | Seven fixed-architecture baseline/add-one reward trials and paired behavior reports |
-| `geometry.py` | Shared closest-approach calculation, local metre projection, and signed polygon clearance |
+| `geometry.py` | Closest approach, local metre projection, cached polygons, signed clearance, nearest boundary points, and finite ray intersections |
+| `boundary_observations.py` | Selectable nearest-edge, ray-cast, and combined obstacle/sector observations |
+| `attention_geometry_comparison.py` | Nearest-edge additive-attention PPO against the read-only completed default-geometry baseline |
 | `observations.py` | Geometry encodings, optional conflict features, ownship state, and shared environment hooks |
 | `comparison.py` | Isolated action/observation ablations and paired reports |
 | `architecture_tree.py` | Conditional architecture options, inherited settings, and Cartesian sweeps |
@@ -157,3 +159,23 @@ the bounded subprocess scheduler and paired reporting. Training/checkpoints rema
 in `training.py`, builders in `models.py`, argument parsing in `cli.py`, and the
 two experiment entry points only dispatch to those modules. All three methods
 pool normalization statistics within a run and freeze them during evaluation.
+
+`multi_agent_sac.py` implements masked off-policy `SharedSAC`, `ISAC`, and
+`MASAC`. It uses SB3's base algorithm for callbacks, prediction and archives;
+collection, raw joint replay, squashed Gaussian actors, twin Q targets and SAC
+updates are custom. ISAC owns independent networks/optimizers/temperatures per
+fixed aircraft slot; its batched prediction requires all slots in fixed order.
+For individual inference use `model.policy.learners[index].predict(local_obs)`.
+Shared SAC uses local critics; MASAC's Q critics additionally attend over active
+agents' observation/action embeddings, with focal-only actor gradients.
+
+Builders `build_shared_sac`, `build_isac`, and `build_masac` live in `models.py`
+and require entity observations with additive attention. `make_mappo_env()`
+provides the common activity/boundary contract; the environment adapter preserves
+raw final observations before normalization. Replay capacity, collection frequency
+and batches count joint decisions; algorithm `learning_starts` and `num_timesteps`
+count agent slots. Replay is serialized separately alongside the policy and
+normalization by `training.py`. Sampling applies current normalization to raw
+transitions. All target networks and actor/critic/temperature optimizers survive
+policy loading. `multi_agent_sac_comparison.py` reuses the joint comparison
+scheduler and report formats with strict SAC-specific settings validation.

@@ -132,3 +132,22 @@ temporal integration, CLI dispatch and architecture trees.
 five-row combined reports, resume/retry, rejected reference mismatches and a real
 training subprocess using a synthetic environment. The existing context-attention
 comparison tests also exercise the shared reference-comparison implementation.
+
+`test_boundary_observations.py` checks true nearest-segment geometry, signed safe
+sides, ray intersections and misses, heading-relative axes, padding, occupancy,
+all observation encodings, reset cache invalidation, and checkpoint restoration.
+`test_geometry_comparison.py` checks all four variants share training/evaluation
+seeds and fixed settings, paired baseline output, and safe completed-run reuse.
+
+`test_multi_agent_sac.py` checks attention Q locality and action dependence,
+focal-only centralized actor gradients, bounded Gaussian log probabilities,
+termination/time-limit targets, raw replay and final states, independent ISAC
+updates, target/temperature optimization, checkpoint/replay resume, frozen
+evaluation, and CLI dispatch. `test_multi_agent_sac_comparison.py` checks isolated
+worker commands, read-only previews, strict protocol/result reuse, paired safety
+reports, and actual synthetic worker training through the shared workflow.
+
+`test_attention_geometry_comparison.py` verifies that only nearest-edge PPO trains,
+the completed additive-attention baseline remains unchanged, all controls and ten
+scenarios match, paired reports contain two variants, and resume/retry or metadata
+mismatches cannot trigger baseline retraining.

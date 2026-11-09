@@ -18,6 +18,81 @@ from .entities import (
 GAMMA = 0.995
 
 
+def build_shared_sac(env, seed=0, device="auto", **overrides):
+    """Build the masked shared local-critic SAC comparison control."""
+    from .multi_agent_sac import SharedSAC
+
+    return _build_joint_sac(SharedSAC, env, seed, device, **overrides)
+
+
+def build_isac(env, seed=0, device="auto", **overrides):
+    """Build fully independent additive-attention SAC learners per aircraft."""
+    from .multi_agent_sac import ISAC
+
+    return _build_joint_sac(ISAC, env, seed, device, **overrides)
+
+
+def build_masac(env, seed=0, device="auto", **overrides):
+    """Build shared-actor SAC with centralized attention over joint actions."""
+    from .multi_agent_sac import MASAC
+
+    return _build_joint_sac(MASAC, env, seed, device, **overrides)
+
+
+def _build_joint_sac(
+    algorithm,
+    env,
+    seed,
+    device,
+    architecture="entity_mlp",
+    pooling="additive_attention",
+    attention_context="all",
+    **overrides,
+):
+    from .multi_agent_sac import MASAC, CentralizedAttentionQ, LocalAttentionQ
+
+    if architecture != "entity_mlp" or pooling != "additive_attention":
+        raise ValueError(
+            "Joint SAC requires entity_mlp with additive_attention pooling"
+        )
+    if attention_context not in ATTENTION_CONTEXTS:
+        raise ValueError(f"Unknown attention context: {attention_context}")
+    layout = getattr(env.observation_space, "entity_layout", None)
+    if layout is None:
+        raise ValueError("Joint SAC requires entity_observations=True")
+    settings = {
+        "learning_rate": 3e-4,
+        "gamma": GAMMA,
+        "buffer_size": 30_000,
+        "learning_starts": 20_000,
+        "batch_size": 64,
+        "tau": 0.005,
+        "train_freq": 8,
+        "gradient_steps": 32,
+        "policy_kwargs": {
+            "actor_kwargs": {"hidden_sizes": (256, 256)},
+            "critic_kwargs": {"hidden_sizes": (256, 256)},
+            "initial_alpha": 0.1,
+        },
+        "seed": seed,
+        "device": device,
+        "verbose": 1,
+    }
+    settings.update(overrides)
+    policy = dict(settings["policy_kwargs"])
+    policy["critic_class"] = (
+        CentralizedAttentionQ if algorithm is MASAC else LocalAttentionQ
+    )
+    for role in ("actor_kwargs", "critic_kwargs"):
+        policy[role] = {
+            **policy.get(role, {}),
+            "layout": layout,
+            "attention_context": attention_context,
+        }
+    settings["policy_kwargs"] = policy
+    return algorithm(env=env, **settings)
+
+
 def build_mappo(env, seed=0, device="auto", **overrides):
     """Build custom MAPPO with a shared local actor and centralized critic.
 

@@ -178,10 +178,21 @@ def reference_comparison_plan(args, new_variant, reference_tree=None):
     return training, variants, protocol, provenance, records, episodes, tree
 
 
-def run_reference_comparison(args, new_variant, *, reference_tree=None, label):
+def run_reference_comparison(
+    args,
+    new_variant,
+    *,
+    reference_tree=None,
+    label,
+    plan_builder=None,
+    command_builder=None,
+    evaluation_reader=None,
+):
     """Only the new variant can enter preparation, retry and subprocess scheduling."""
-    training, variants, protocol, source, references, episodes, tree = (
-        reference_comparison_plan(args, new_variant, reference_tree)
+    plan_builder = plan_builder or reference_comparison_plan
+    evaluation_reader = evaluation_reader or matched_evaluation
+    training, variants, protocol, source, references, episodes, tree = plan_builder(
+        args, new_variant, reference_tree
     )
     new_variants = [
         variant
@@ -203,7 +214,7 @@ def run_reference_comparison(args, new_variant, *, reference_tree=None, label):
                         for r in references
                     ],
                     "commands": [
-                        architecture_command(
+                        (command_builder or architecture_command)(
                             training,
                             variant,
                             seed,
@@ -243,7 +254,7 @@ def run_reference_comparison(args, new_variant, *, reference_tree=None, label):
             new_variants,
             protocol,
             previous,
-            evaluation_reader=matched_evaluation,
+            evaluation_reader=evaluation_reader,
         )
         _write_json(manifest, configuration)
         _write_json(
@@ -264,7 +275,8 @@ def run_reference_comparison(args, new_variant, *, reference_tree=None, label):
                 protocol,
                 records,
                 new_episodes,
-                evaluation_reader=matched_evaluation,
+                evaluation_reader=evaluation_reader,
+                command_builder=command_builder,
             )
         finally:
             signal.signal(signal.SIGTERM, handler)

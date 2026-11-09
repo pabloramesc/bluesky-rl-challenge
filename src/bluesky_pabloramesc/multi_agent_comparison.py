@@ -68,13 +68,40 @@ def comparison_control():
 
 def multi_agent_plan(args):
     """Validate the complete protocol before starting simulator processes."""
+    validate_joint_comparison(args)
+    args.timesteps = args.joint_steps * N_AGENTS
+    # Keep the shared-policy method first as the paired reference.
+    architecture = {"architecture": args.architecture, "temporal": "none"}
+    if args.architecture == "entity_mlp":
+        architecture.update(
+            pooling="additive_attention", attention_context=args.attention_context
+        )
+    variants = [ArchitectureVariant((name,), architecture.copy()) for name in BUILDERS]
+    return variants, {
+        "algorithm": "multi_agent_ppo",
+        "multi_agent": True,
+        "timesteps": args.timesteps,
+        "joint_steps": args.joint_steps,
+        "n_agents": N_AGENTS,
+        "seeds": args.seeds,
+        "eval_seeds": args.eval_seeds,
+        "control_config": comparison_control().to_dict(),
+        "reward_config": RewardConfig().to_dict(),
+        "settings": comparison_settings(args),
+        "normalization": "shared VecNormalize statistics per run; frozen during evaluation",
+        "variants": list(BUILDERS),
+        **({"architecture_config": architecture} if args.architecture != "mlp" else {}),
+    }
+
+
+def validate_joint_comparison(args):
+    """Validate common resource, seed, and budget options without writing files."""
     for name in (
         "joint_steps",
-        "rollout_steps",
         "batch_size",
-        "epochs",
         "jobs",
         "threads_per_job",
+        *(name for name in ("rollout_steps", "epochs") if hasattr(args, name)),
     ):
         if type(getattr(args, name)) is not int or getattr(args, name) <= 0:
             raise ValueError(f"{name} must be a positive integer")
@@ -104,29 +131,6 @@ def multi_agent_plan(args):
         raise ValueError("timeout must be finite and positive")
     if args.retry_failed and not args.resume:
         raise ValueError("--retry-failed requires --resume")
-    args.timesteps = args.joint_steps * N_AGENTS
-    # Keep the shared-policy method first as the paired reference.
-    architecture = {"architecture": args.architecture, "temporal": "none"}
-    if args.architecture == "entity_mlp":
-        architecture.update(
-            pooling="additive_attention", attention_context=args.attention_context
-        )
-    variants = [ArchitectureVariant((name,), architecture.copy()) for name in BUILDERS]
-    return variants, {
-        "algorithm": "multi_agent_ppo",
-        "multi_agent": True,
-        "timesteps": args.timesteps,
-        "joint_steps": args.joint_steps,
-        "n_agents": N_AGENTS,
-        "seeds": args.seeds,
-        "eval_seeds": args.eval_seeds,
-        "control_config": comparison_control().to_dict(),
-        "reward_config": RewardConfig().to_dict(),
-        "settings": comparison_settings(args),
-        "normalization": "shared VecNormalize statistics per run; frozen during evaluation",
-        "variants": list(BUILDERS),
-        **({"architecture_config": architecture} if args.architecture != "mlp" else {}),
-    }
 
 
 def multi_agent_command(args, variant, seed, directory, device):
@@ -328,16 +332,23 @@ def write_multi_agent_report(directory, episodes, records, variants, seeds):
     path.write_text(body + "\n".join(lines))
 
 
-def run_multi_agent_comparison(args):
+def run_multi_agent_comparison(
+    args,
+    *,
+    plan=multi_agent_plan,
+    command_builder=multi_agent_command,
+    evaluation_reader=multi_agent_evaluation,
+    report_writer=write_multi_agent_report,
+):
     """Schedule isolated runs with resumable manifests and paired reporting."""
-    variants, protocol = multi_agent_plan(args)
+    variants, protocol = plan(args)
     if args.dry_run:
         print(
             json.dumps(
                 {
                     "protocol": protocol,
                     "commands": [
-                        multi_agent_command(
+                        command_builder(
                             args,
                             variant,
                             seed,
@@ -365,7 +376,7 @@ def run_multi_agent_comparison(args):
         state = args.output_dir / "runs.json"
         previous = json.loads(state.read_text()) if state.is_file() else []
         records, episodes = _prepare_runs(
-            args, variants, protocol, previous, evaluation_reader=multi_agent_evaluation
+            args, variants, protocol, previous, evaluation_reader=evaluation_reader
         )
         _write_json(
             args.output_dir / "execution.json",
@@ -386,14 +397,12 @@ def run_multi_agent_comparison(args):
                 protocol,
                 records,
                 episodes,
-                command_builder=multi_agent_command,
-                evaluation_reader=multi_agent_evaluation,
+                command_builder=command_builder,
+                evaluation_reader=evaluation_reader,
             )
         finally:
             signal.signal(signal.SIGTERM, handler)
-            write_multi_agent_report(
-                args.output_dir, episodes, records, variants, args.seeds
-            )
+            report_writer(args.output_dir, episodes, records, variants, args.seeds)
     print(f"Multi-agent report: {args.output_dir / 'report.md'}", flush=True)
     return (
         130

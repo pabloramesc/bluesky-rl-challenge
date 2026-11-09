@@ -136,6 +136,14 @@ dual-branch traffic/obstacle Transformer comparison. It trains only the new
 architecture and combines its results with the four completed reference variants.
 See the [dual encoder guide](experiments/README.md#dual-encoder-transformer-comparison).
 
+Use `python -m experiments.compare_geometry` to compare the current obstacle/sector
+representation with nearest-edge, ray-cast, and combined polygon observations.
+See the [geometry comparison guide](experiments/README.md#obstacle-and-sector-geometry-comparison)
+for settings and paired evaluation commands. Use
+`python -m experiments.compare_attention_geometry --dry-run` to preview the
+focused best-PPO comparison: reuse the completed additive-attention baseline and
+train only nearest-edge geometry.
+
 See [experiments/README.md](experiments/README.md) for training details.
 Generated checkpoints and results are kept under `experiments/models/` and
 `experiments/results/`, ignored by Git. Each training run saves a unique report

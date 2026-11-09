@@ -259,6 +259,7 @@ def record_training_progress(metadata, model, history, learning_started):
     metadata["parameter_count"] = sum(
         parameter.numel() for parameter in model.policy.parameters()
     )
+    metadata["gradient_updates"] = model._n_updates
     if hasattr(model, "active_timesteps"):
         metadata["active_timesteps"] = model.active_timesteps
         metadata["joint_steps"] = model.num_timesteps // model.n_agents
@@ -612,6 +613,7 @@ def train(
                         "policy_delay",
                         "target_policy_noise",
                         "target_noise_clip",
+                        "target_entropy",
                         "action_noise",
                     )
                     if hasattr(model, name)

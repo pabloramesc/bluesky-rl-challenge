@@ -1,6 +1,6 @@
 # Research status
 
-Last reviewed: 2026-11-08. Run evidence: 2026-10-17–2026-11-08 (Europe/Madrid).
+Last reviewed: 2026-11-09. Run evidence: 2026-10-17–2026-11-09 (Europe/Madrid).
 
 ## Current findings
 
@@ -211,6 +211,40 @@ Evidence:
   `policy_20261108T202240_66fdadf5`, seed 42, attempt 2; the interrupted first
   attempt is excluded.
 
+## Geometry comparison (preliminary)
+
+PPO/flat MLP, seed 42, 100,352 steps each, scenarios **2026 and 2035 only**.
+Mean returns: current **−718.44**, nearest edge **−637.92**, ray cast **−1,417.04**,
+both **−748.67**; all variants completed **0/2** and timed out in both scenarios.
+This used upstream/legacy observations and relative speed, unlike the successful
+all-context additive-attention PPO with `goal_aligned_conflict` control observations
+and absolute speed. That policy completed the same two scenarios with mean return
+**−175.35**. These results do not establish geometry performance under the selected
+attention configuration; repeat while varying only geometry.
+Evidence: `experiments/results/geometry_comparison/` (`comparison.json`,
+`summary.csv`, `episodes.csv`, `paired.csv`).
+
+### Matched additive-attention follow-up
+
+PPO/entity MLP with all-context additive attention, seed 42, **100,352 steps**,
+paired scenarios **2026–2035**. The completed default-geometry baseline was reused;
+nearest-edge training matched its controls, PPO settings and base reward.
+
+| Geometry | Mean return | Completed | Intrusion s | Restricted s | Outside s |
+|---|---:|---:|---:|---:|---:|
+| **Default** | **−148.27** | **10/10** | **75.7** | **73.0** | **0.0** |
+| Nearest edge | −950.16 | 4/10 | 88.7 | 230.1 | 628.1 |
+
+Exposure is mean seconds per episode. Nearest edge wins 2/10 paired scenarios,
+with a **−801.89** mean return difference and six timeouts. **Retain default
+geometry.** PPO KL/clipping metrics were similar; the cause of degradation is
+unresolved. Nearest points discard broader polygon shape, suggesting a future
+append-features comparison rather than replacing the existing representation.
+One training seed at 100k steps does not establish a general geometry ranking.
+Evidence: `experiments/results/attention_geometry_comparison/` (`comparison.json`,
+`summary.csv`, `paired.csv`, `episodes.csv`, `runs.json`); nearest-edge run
+`policy_20261109T080428_ce1e00b8`.
+
 ## Temporal comparison
 
 All ten trials completed: single-agent PPO, seed 42, **100,352 actual steps** each,
@@ -321,6 +355,14 @@ Evidence: `experiments/results/multi_agent_additive_seed42_100k/`
 - IPPO: `policy_20261026T072127_998fbc17`.
 
 ## Next experiments
+
+The additive-attention SAC family is implemented: independent SAC (ISAC), masked
+parameter-shared local-critic SAC, and shared-actor centralized-critic MASAC.
+These implementations have no benchmark results yet. Use
+`experiments.compare_multi_agent_sac` with 100,352 joint decisions, seed 42 and
+scenarios 2026–2035 to match the actual PPO-family budget above. The earlier SB3
+shared-SAC baseline uses a different collector, controls and smaller simulator
+budget; it is not a result for this new matched comparison.
 
 1. Repeat the top two architectures and flat MLP across training seeds.
 2. Validate action selection across training seeds; compare `goal_aligned` with

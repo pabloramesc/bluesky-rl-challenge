@@ -22,8 +22,25 @@ class ControlConfig:
     schema_version: int = 1
     observation_encoding: str = "upstream"
     decision_interval: int = 10
+    geometry_representation: str = "current"
+    geometry_ray_count: int = 24
+    geometry_ray_range_m: float = 100_000.0
 
     def __post_init__(self):
+        if self.geometry_representation not in (
+            "current",
+            "nearest_edge",
+            "ray_cast",
+            "both",
+        ):
+            raise ValueError("unknown geometry representation")
+        if type(self.geometry_ray_count) is not int or self.geometry_ray_count <= 0:
+            raise ValueError("geometry ray count must be a positive integer")
+        if (
+            not math.isfinite(self.geometry_ray_range_m)
+            or self.geometry_ray_range_m <= 0
+        ):
+            raise ValueError("geometry ray range must be finite and positive")
         if type(self.decision_interval) is not int or self.decision_interval <= 0:
             raise ValueError("decision interval must be a positive integer")
         for value in (self.heading_action, self.speed_action):
@@ -61,7 +78,20 @@ class ControlConfig:
 
     def to_dict(self):
         """Return JSON-serializable settings for checkpoint metadata."""
-        return asdict(self)
+        settings = asdict(self)
+        # Keep legacy manifests comparable when the geometry interface is unchanged.
+        if (
+            self.geometry_representation == "current"
+            and self.geometry_ray_count == 24
+            and self.geometry_ray_range_m == 100_000
+        ):
+            for key in (
+                "geometry_representation",
+                "geometry_ray_count",
+                "geometry_ray_range_m",
+            ):
+                settings.pop(key)
+        return settings
 
 
 def action_targets(action, heading, cas_knots, config):

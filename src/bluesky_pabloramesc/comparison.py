@@ -30,6 +30,9 @@ def comparison_command(
     observation_encoding="upstream",
     observation_profile="control",
     decision_interval=None,
+    geometry_representation=None,
+    geometry_ray_count=24,
+    geometry_ray_range_m=100_000,
 ):
     """Build a standard training command, using identical observations and bounds."""
     module = f"experiments.train_{'zoo' if multi_agent else 'single'}_{algorithm}"
@@ -60,6 +63,18 @@ def comparison_command(
         "--device",
         device,
         *(["--decision-interval", str(decision_interval)] if decision_interval else []),
+        *(
+            [
+                "--geometry-representation",
+                geometry_representation,
+                "--geometry-ray-count",
+                str(geometry_ray_count),
+                "--geometry-ray-range-m",
+                str(geometry_ray_range_m),
+            ]
+            if geometry_representation is not None
+            else []
+        ),
         "--eval-seeds",
         *map(str, eval_seeds),
     ]
@@ -154,7 +169,9 @@ def completed_evaluation(directory, eval_seeds):
     )
 
 
-def prepare_comparison(args, variants=None, observation=False, frequency=False):
+def prepare_comparison(
+    args, variants=None, observation=False, frequency=False, geometry=False
+):
     """Validate reuse before starting any additional simulator processes."""
     manifest = args.output_dir / "comparison.json"
     settings = {**vars(args), "variants": variants or VARIANTS}
@@ -166,6 +183,13 @@ def prepare_comparison(args, variants=None, observation=False, frequency=False):
             raise ValueError(f"No comparison manifest found: {manifest}")
         previous = json.loads(manifest.read_text())
         keys = ["algorithm", "multi_agent", "timesteps", "speed_min", "speed_max"]
+        if geometry:
+            keys += [
+                "observation_encoding",
+                "geometry_ray_count",
+                "geometry_ray_range_m",
+                "decision_interval",
+            ]
         if frequency:
             keys += [
                 "heading_action",
@@ -197,9 +221,9 @@ def prepare_comparison(args, variants=None, observation=False, frequency=False):
         manifest.write_text(json.dumps(settings, default=str, indent=2) + "\n")
 
 
-def run_comparison(args, observation=False, frequency=False):
+def run_comparison(args, observation=False, frequency=False, geometry=False):
     """Train every variant/seed once, then save raw and paired comparison reports."""
-    fixed_actions = observation or frequency
+    fixed_actions = observation or frequency or geometry
     if frequency and (args.multi_agent or args.algorithm != "ppo"):
         raise ValueError("decision interval comparison requires single-agent PPO")
     if frequency and (
@@ -213,6 +237,8 @@ def run_comparison(args, observation=False, frequency=False):
         )
     if args.multi_agent and args.algorithm not in ("ppo", "sac"):
         raise ValueError("multi-agent comparison supports PPO and SAC")
+    if not args.seeds or not args.eval_seeds:
+        raise ValueError("training and evaluation seeds must be nonempty")
     if len(set(args.seeds)) != len(args.seeds) or len(set(args.eval_seeds)) != len(
         args.eval_seeds
     ):
@@ -250,17 +276,35 @@ def run_comparison(args, observation=False, frequency=False):
             )
             for interval in args.intervals
         ]
+    if geometry:
+        from .boundary_observations import GEOMETRY_REPRESENTATIONS
+
+        ControlConfig(
+            geometry_ray_count=args.geometry_ray_count,
+            geometry_ray_range_m=args.geometry_ray_range_m,
+            observation_encoding=args.observation_encoding,
+            decision_interval=args.decision_interval,
+        )
+        if args.multi_agent and args.decision_interval != 10:
+            raise ValueError("Multi-agent comparisons require decision interval 10")
+        variants = [
+            (name, args.heading_action, args.speed_action, args.observation_encoding)
+            for name in GEOMETRY_REPRESENTATIONS
+        ]
     prepare_comparison(
         args,
         [v[0] for v in variants] if fixed_actions else None,
         observation=fixed_actions,
         frequency=frequency,
+        geometry=geometry,
     )
     rows = []
     for variant, heading, speed, encoding in variants:
         interval = (
             int(variant.removeprefix("interval_").removesuffix("s"))
             if frequency
+            else args.decision_interval
+            if geometry
             else None
         )
         timesteps = (
@@ -297,6 +341,15 @@ def run_comparison(args, observation=False, frequency=False):
                         if fixed_actions
                         else "control",
                         decision_interval=interval,
+                        **(
+                            {
+                                "geometry_representation": variant,
+                                "geometry_ray_count": args.geometry_ray_count,
+                                "geometry_ray_range_m": args.geometry_ray_range_m,
+                            }
+                            if geometry
+                            else {}
+                        ),
                     ),
                     check=True,
                 )
@@ -313,7 +366,9 @@ def run_comparison(args, observation=False, frequency=False):
             write_csv(args.output_dir / "episodes.csv", rows)
     summary, paired = summarize(
         rows,
-        "interval_10s"
+        "current"
+        if geometry
+        else "interval_10s"
         if frequency
         else encodings[0]
         if observation

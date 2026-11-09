@@ -121,6 +121,7 @@ def extend_observation_space(
         and config.observation_profile == "legacy"
         and not entity_observations
         and not obstacle_observations
+        and config.geometry_representation == "current"
     ):
         return space
     fields = dict(space.spaces)
@@ -134,6 +135,9 @@ def extend_observation_space(
             else spaces.Box(-np.inf, np.inf, shape=value.shape, dtype=np.float64)
             for key, value in encoded.items()
         }
+    from .boundary_observations import boundary_space
+
+    fields = boundary_space(fields, config, obstacle_observations)
     if config.observation_profile == "control":
         for key in ("own_heading_sin", "own_heading_cos"):
             fields[key] = spaces.Box(-1, 1, shape=(1,), dtype=np.float64)
@@ -142,7 +146,7 @@ def extend_observation_space(
         fields["intruder_present"] = spaces.Box(
             0, 1, shape=fields["x_r"].shape, dtype=np.float64
         )
-    if obstacle_observations:
+    if obstacle_observations and config.geometry_representation == "current":
         fields["obstacle_present"] = spaces.Box(
             0, 1, shape=fields["obstacle_radius"].shape, dtype=np.float64
         )
@@ -195,9 +199,16 @@ def ownship_features(heading, cas_knots):
 class ControlHooks:
     """Share upstream observation/action extension points without owning a simulator."""
 
+    def reset(self, *args, **kwargs):
+        self._boundary_geometry = None
+        return super().reset(*args, **kwargs)
+
     def _get_obs(self, ac_id):
         observation = super()._get_obs(ac_id)
-        if getattr(self, "obstacle_observations", False):
+        if (
+            getattr(self, "obstacle_observations", False)
+            and self.control_config.geometry_representation == "current"
+        ):
             observation["obstacle_present"] = (
                 observation["obstacle_cos_bearing"] ** 2
                 + observation["obstacle_sin_bearing"] ** 2
@@ -213,6 +224,33 @@ class ControlHooks:
             )
         else:
             observation = encode_geometry(observation, encoding)
+        if self.control_config.geometry_representation != "current":
+            import bluesky as bs
+
+            from .boundary_observations import boundary_features
+            from .geometry import PolygonGeometry, local_meters
+
+            obstacle_count = observation["obstacle_radius"].shape[0]
+            if getattr(self, "_boundary_geometry", None) is None:
+                self._boundary_geometry = PolygonGeometry(self.scenario)
+            index = bs.traf.id2idx(ac_id)
+            position = local_meters(
+                (bs.traf.lat[index], bs.traf.lon[index]), self.scenario.center
+            )
+            observation = {
+                key: value
+                for key, value in observation.items()
+                if not key.startswith(("obstacle_", "sector_point_"))
+            }
+            observation.update(
+                boundary_features(
+                    self._boundary_geometry,
+                    position,
+                    bs.traf.hdg[index],
+                    self.control_config,
+                    obstacle_count,
+                )
+            )
         if self.control_config.observation_profile == "control":
             import bluesky as bs
 

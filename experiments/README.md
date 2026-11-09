@@ -945,3 +945,202 @@ python -m experiments.compare_multi_agent \
   --hidden-sizes 8 --seeds 42 --eval-seeds 2026 \
   --output-dir experiments/results/multi_agent_smoke
 ```
+
+## Obstacle and sector geometry comparison
+
+Choose polygon observations independently of the traffic/goal encoding:
+
+| `--geometry-representation` | Obstacle observations | Sector observations |
+| --- | --- | --- |
+| `current` (default) | Existing centre, bearing, enclosing radius | Existing 12 perimeter samples and inside flag |
+| `nearest_edge` | Closest boundary displacement, signed clearance, presence per obstacle | Closest boundary displacement and signed clearance |
+| `ray_cast` | Boundary distances and hit masks along fixed rays | Separate boundary distances and hit masks along the same rays |
+| `both` | Nearest-edge features plus rays | Nearest-edge features plus rays |
+
+All alternatives retain sector occupancy and add an obstacle occupancy flag.
+Nearest points lie on actual polygon segments, not just vertices. Positive
+clearance means outside an obstacle or inside the sector; negative means unsafe.
+Nearest-point axes are always ownship forward/right, regardless of
+`--observation-encoding`; distances and displacements use a fixed 100 km divisor.
+Obstacle slots are sorted by unsigned boundary distance with stable ties and
+zero padding plus an explicit presence mask.
+
+Rays start forward and run clockwise around the full circle. Defaults are
+`--geometry-ray-count 24 --geometry-ray-range-m 100000`. Ray distances are divided
+by maximum range. No hit returns distance 1 and hit mask 0; a hit at maximum range
+returns distance 1 and mask 1. Tangencies count as hits. Starting on a boundary
+returns zero. Starting inside an obstacle makes its first hit an exit; occupancy
+flags distinguish this case. Rays query all obstacles, including ones beyond the
+nearest-obstacle slot limit. Finite ray spacing can miss thin features between rays.
+
+All polygon calculations use the existing scenario-centred local metre projection;
+static polygon geometry is cached per episode. The upstream simulator and reward
+formulas are unchanged. Geometry settings are saved with checkpoints, automatically
+restored for evaluation/resume, and cannot be overridden on existing policies.
+Existing checkpoints without these settings default to `current`.
+
+Train and evaluate all four representations with matched seeds and equal training
+budgets using the same default MLP architecture, actions, and reward settings:
+
+```bash
+python -m experiments.compare_geometry \
+  --timesteps 100000 --seeds 0 1 2 \
+  --eval-seeds 2026 2027 2028 2029 2030 \
+  --output-dir experiments/results/geometry_comparison
+```
+
+Use `--observation-encoding goal_aligned_conflict` to fix a different traffic/goal
+encoding across all four variants, or `--multi-agent --algorithm ppo` for shared
+multi-agent policies. Each training run executes in a separate process. Outputs
+include `episodes.csv`, `summary.csv`, `paired.csv` (return differences from
+`current`), `comparison.png`, and per-run policy/normalization checkpoints and
+reports. Summary metrics include goal completion, restricted-area events and time,
+and sector exits and time outside; assess these alongside return. Add `--resume`
+to reuse completed runs with matching settings and train missing runs. Interrupted
+individual runs must be resumed separately before their comparison results can
+be reused.
+
+For individual training runs, add e.g. `--geometry-representation both` to any
+training command. The dual obstacle Transformer supports `current`, `nearest_edge`,
+and `both`; `ray_cast` alone has no obstacle entity tokens and is rejected for
+that architecture.
+
+## Additive-attention SAC family
+
+`compare_multi_agent_sac` compares three continuous-action methods using one
+masked joint collector and raw joint replay:
+
+| Method | Actor | Twin Q critics | Temperature |
+|---|---|---|---|
+| `shared_sac` | Shared local actor | Shared local critics | One shared alpha |
+| `isac` | Separate local actor per aircraft | Separate local critics per aircraft | Separate alpha per aircraft |
+| `masac` | Shared local actor | Shared centralized critics | One shared alpha |
+
+Every actor and each online Q critic have independent entity MLP encoders with
+masked additive attention over locally observed traffic. Queries use all context
+by default; select `--attention-context ownship_goal` to change that. MASAC adds
+focal-agent-conditioned additive attention over active agents' observation/action
+embeddings, including the focal agent. Actors remain local. For MASAC actor
+updates, peer actions are detached in each focal Q readout. Bellman targets use
+individual rewards and each aircraft's own entropy term. Targets use twin Q
+minima and Polyak averaging. Actors use state-dependent, tanh-squashed Gaussian
+sampling; alpha is tuned automatically. No temporal history is used.
+
+To match the **actual** 100,352-joint-step additive-attention PPO benchmark:
+
+```bash
+python -m experiments.compare_multi_agent_sac \
+  --joint-steps 100352 --seeds 42 \
+  --eval-seeds 2026 2027 2028 2029 2030 2031 2032 2033 2034 2035 \
+  --jobs 3 --threads-per-job 1 --devices cpu \
+  --output-dir experiments/results/multi_agent_sac_additive_seed42_100k
+```
+
+Use `--dry-run` to preview without creating files; use the same command with
+`--resume` to reuse validated completed comparisons, or `--resume --retry-failed`
+to retry unsuccessful runs in new attempt directories. Each subprocess owns one
+BlueSky simulator. Controls match `compare_multi_agent`: relative heading,
+absolute speed (100–500 kt), `goal_aligned_conflict` control observations, ten-second
+decisions, and base individual rewards. Evaluation normalization is frozen.
+
+Comparison options `--joint-steps`, `--buffer-size` (default 30,000),
+`--learning-starts` (default 2,000), `--batch-size` (default 64), and `--train-freq`
+(default 8) count **joint decisions**. Collection rounds the budget up to a full
+`train-freq` block. `--gradient-steps 32` performs 32 updates per learner after
+each collection block once warmup is complete. ISAC updates each learner using
+its valid transitions from the sampled joint batch; the shared methods pool
+active transitions. Thus minibatch sample counts, total parameters and optimizer
+calls differ. Report sample efficiency and compute separately; these defaults
+are starting settings, not tuned winners. Other options include `--hidden-sizes`,
+`--learning-rate`, `--tau`, and `--initial-alpha`.
+
+Replay keeps raw observations/rewards, normalized when sampled using current
+statistics. Exact raw final observations are retained before normalization and
+clipping. Departed agents are excluded from losses and centralized aggregation;
+true terminations stop bootstrapping, and truncations bootstrap final states.
+Checkpoints include online/target networks, every optimizer and temperature,
+normalization, architecture/control/reward sidecars, and the raw replay buffer.
+The comparison saves periodic checkpoints at roughly quarter-budget intervals,
+limiting repeated copies of the large replay buffer. Standalone trainers expose
+the existing `--checkpoint-interval` option in agent slots.
+
+Outputs follow the PPO comparison: `comparison.json`, `runs.json`/`runs.csv`,
+`episodes.csv`, `summary.csv`, `paired.csv`, `comparison.png`, and `report.md`.
+The report preserves return, completion, intrusion/restricted/outside exposure,
+flight time, actual joint/valid transitions, parameters, updates and training
+cost. Paired differences use `shared_sac` as the reference. PPO results are not
+imported automatically; add benchmark rows to RESEARCH only after checking
+matched budgets, controls, rewards, training seeds and evaluation scenarios.
+Aircraft within a scenario are not independent evaluation trials.
+
+Standalone entry points support `train`, `resume`, `evaluate`, and `replay`:
+
+```bash
+python -m experiments.train_zoo_isac --timesteps 100000
+python -m experiments.train_zoo_shared_sac --timesteps 100000
+python -m experiments.train_zoo_masac --timesteps 100000
+python -m experiments.train_zoo_masac resume --timesteps 100000
+```
+
+Standalone `--timesteps` counts **agent slots**, so 100,000 is only 10,000 joint
+decisions with ten aircraft. Standalone control defaults retain the legacy
+interface; use the comparison runner for the matched PPO protocol. These new
+entry points default to additive attention with all context. The existing
+`train_zoo_sac` retains the earlier SB3 implementation and checkpoint format;
+its archives are not interchangeable with these custom SAC learners.
+
+A short integration smoke run, without a performance claim:
+
+```bash
+python -m experiments.compare_multi_agent_sac \
+  --joint-steps 2 --learning-starts 0 --train-freq 2 --gradient-steps 1 \
+  --buffer-size 8 --batch-size 2 --hidden-sizes 8 \
+  --seeds 42 --eval-seeds 2026 --jobs 1 \
+  --output-dir experiments/results/multi_agent_sac_smoke
+```
+
+### Nearest edges with the best additive-attention PPO
+
+The focused comparison reuses the completed **default-geometry additive-attention
+PPO** result from `experiments/results/attention_comparison/` and trains only
+`nearest_edge`. It selects the entity MLP with all-context additive attention and
+no temporal history. Controls stay fixed: relative heading, absolute speed
+(100–500 kt), `goal_aligned_conflict` control observations, 10-second decisions,
+and the base reward. The reference supplies training seeds, requested/actual
+budgets, evaluation scenarios, device, and thread count. With the existing results,
+this means seed **42**, **100,000 requested / 100,352 actual steps**, and all ten
+scenarios **2026–2035**. The reused baseline has −148.27 mean return and 10/10
+completions. This replaces the earlier flat-MLP geometry experiment as the test
+of geometry under the selected PPO architecture.
+
+Preview the exact inherited settings and the single new training command:
+
+```bash
+python -m experiments.compare_attention_geometry --dry-run
+```
+
+Train nearest-edge PPO and produce the paired comparison:
+
+```bash
+python -m experiments.compare_attention_geometry
+```
+
+The baseline directory is read only and is never retrained. An absent, incomplete,
+or incompatible baseline stops the comparison. `--reference-dir` may select
+another completed architecture comparison containing the same additive-attention
+configuration. There are no controls, seed, architecture, or budget overrides.
+New reports must match the reference PPO settings, actual budget, base reward,
+and complete evaluation scenario set; only geometry differs.
+
+Outputs live under `experiments/results/attention_geometry_comparison/`: a manifest
+with reference hashes and both control configurations, `runs.json`, `episodes.csv`,
+`summary.csv`, `paired.csv`, `comparison.png`, and `report.md`. The nearest-edge
+attempt also saves policy and normalization checkpoints. Paired return differences
+use `current` as the baseline; inspect completion and safety exposure alongside
+return. A single training seed remains preliminary.
+
+Use `--resume` to reuse a completed nearest-edge run. After failure or interruption,
+`--resume --retry-failed` starts a fresh nearest-edge attempt while preserving the
+previous attempt. `--timeout SECONDS` limits a new run's wall time. Changing the
+reference evidence is rejected on resume. The earlier four-way geometry results
+are preserved in their original directory.

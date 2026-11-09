@@ -206,6 +206,12 @@ class SeedableSB3VecEnvWrapper(SB3VecEnvWrapper):
         observations, rewards, dones, infos = super().step_wait()
         for info in infos:
             info.update(info.pop("_joint_final_info", {}))
+            if "_mappo_active" in info and "terminal_observation" in info:
+                # Keep an exact raw final state for off-policy replay before
+                # VecNormalize normalizes (and potentially clips) this field.
+                info["_joint_terminal_observation"] = np.array(
+                    info["terminal_observation"], copy=True
+                )
         return observations, rewards, np.asarray(dones, dtype=bool), infos
 
 

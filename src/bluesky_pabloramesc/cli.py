@@ -13,14 +13,19 @@ from .mappo import MAPPO
 from .models import (
     build_ddpg,
     build_ippo,
+    build_isac,
     build_mappo,
+    build_masac,
     build_multi_ppo,
     build_multi_sac,
     build_ppo,
     build_sac,
+    build_shared_sac,
     build_td3,
 )
 from .training import EVAL_SEED, replay, train
+
+JOINT_SAC_ALGORITHMS = ("isac", "shared_sac", "masac")
 
 
 def positive_int(value):
@@ -135,6 +140,12 @@ def parse_args(algorithm, multi_agent=False, argv=None):
 
     parser.add_argument("--observation-encoding", choices=OBSERVATION_ENCODINGS)
     parser.add_argument(
+        "--geometry-representation",
+        choices=["current", "nearest_edge", "ray_cast", "both"],
+    )
+    parser.add_argument("--geometry-ray-count", type=positive_int)
+    parser.add_argument("--geometry-ray-range-m", type=float)
+    parser.add_argument(
         "--speed-min", type=float, help="minimum commanded CAS in knots"
     )
     parser.add_argument(
@@ -163,14 +174,22 @@ def parse_args(algorithm, multi_agent=False, argv=None):
                 args.insert(position, flag)
                 position += 2
     parsed = parser.parse_args(args)
-    if algorithm in ("ippo", "mappo") and not multi_agent:
+    if algorithm in ("ippo", "mappo", *JOINT_SAC_ALGORITHMS) and not multi_agent:
         parser.error(f"{algorithm.upper()} requires a multi-agent environment")
     from .training import load_architecture_config
 
     saved_architecture = (
         load_architecture_config(parsed.model_path)
         if parsed.mode != "train"
-        else {"architecture": "mlp", "pooling": "mean_max"}
+        else (
+            {
+                "architecture": "entity_mlp",
+                "pooling": "additive_attention",
+                "attention_context": "all",
+            }
+            if algorithm in JOINT_SAC_ALGORITHMS
+            else {"architecture": "mlp", "pooling": "mean_max"}
+        )
     )
     if (
         parsed.attention_context is not None
@@ -272,6 +291,12 @@ def parse_args(algorithm, multi_agent=False, argv=None):
             parser.error(
                 f"{algorithm.upper()} entity_mlp requires --pooling additive_attention"
             )
+    if algorithm in JOINT_SAC_ALGORITHMS and (
+        parsed.architecture != "entity_mlp"
+        or parsed.pooling != "additive_attention"
+        or parsed.temporal != "none"
+    ):
+        parser.error("Joint SAC requires entity_mlp/additive_attention without history")
 
     if parsed.output_path is not None and parsed.mode != "resume":
         parser.error("--output-path is only supported in resume mode")
@@ -292,6 +317,9 @@ def parse_args(algorithm, multi_agent=False, argv=None):
         "speed_action",
         "observation_profile",
         "observation_encoding",
+        "geometry_representation",
+        "geometry_ray_count",
+        "geometry_ray_range_m",
         "speed_min",
         "speed_max",
     ):
@@ -309,10 +337,20 @@ def parse_args(algorithm, multi_agent=False, argv=None):
         "speed_action",
         "observation_profile",
         "observation_encoding",
+        "geometry_representation",
+        "geometry_ray_count",
+        "geometry_ray_range_m",
         "speed_min",
         "speed_max",
     ):
         setattr(parsed, key, getattr(parsed.control_config, key))
+    if (
+        parsed.architecture == "dual_entity_transformer"
+        and parsed.geometry_representation == "ray_cast"
+    ):
+        parser.error(
+            "dual_entity_transformer requires obstacle tokens; use nearest_edge or both"
+        )
     from .training import load_reward_config
 
     saved_reward = (
@@ -338,14 +376,14 @@ def run_cli(algorithm, multi_agent=False):
     """Run the requested workflow and print the final episode return.
 
     Args:
-        algorithm: One of "ppo", "sac", "td3", "ddpg", "ippo", or "mappo".
+        algorithm: SB3 algorithm, joint PPO method, or isac/shared_sac/masac.
         multi_agent: Whether to use the joint multi-agent environment and builders.
     """
     args = parse_args(algorithm, multi_agent)
     if multi_agent:
         from .multi_agent import make_vec_env as env_factory
 
-        if algorithm in ("ippo", "mappo"):
+        if algorithm in ("ippo", "mappo", *JOINT_SAC_ALGORITHMS):
             from .multi_agent import make_mappo_env as env_factory
 
         builder = {
@@ -353,6 +391,9 @@ def run_cli(algorithm, multi_agent=False):
             "sac": build_multi_sac,
             "mappo": build_mappo,
             "ippo": build_ippo,
+            "isac": build_isac,
+            "shared_sac": build_shared_sac,
+            "masac": build_masac,
         }[algorithm]
     else:
         from .single_agent import make_env as env_factory
@@ -391,7 +432,7 @@ def run_cli(algorithm, multi_agent=False):
             attention_context=args.attention_context,
             **(
                 {"transformer_layers": args.transformer_layers}
-                if algorithm not in ("ippo", "mappo")
+                if algorithm not in ("ippo", "mappo", *JOINT_SAC_ALGORITHMS)
                 else {}
             ),
             **(
@@ -413,6 +454,8 @@ def run_cli(algorithm, multi_agent=False):
             builder, temporal=args.temporal, history_length=args.history_length
         )
 
+    from .multi_agent_sac import ISAC, MASAC, SharedSAC
+
     model_type = {
         "ppo": PPO,
         "sac": SAC,
@@ -420,6 +463,9 @@ def run_cli(algorithm, multi_agent=False):
         "ddpg": DDPG,
         "mappo": MAPPO,
         "ippo": IPPO,
+        "isac": ISAC,
+        "shared_sac": SharedSAC,
+        "masac": MASAC,
     }[algorithm]
     options = {
         "device": args.device,
@@ -466,13 +512,17 @@ def run_cli(algorithm, multi_agent=False):
     print(f"Episode return: {mean:.2f} +/- {std:.2f}")
 
 
-def run_comparison_cli(argv=None, *, observation=False, frequency=False):
+def run_comparison_cli(
+    argv=None, *, observation=False, frequency=False, geometry=False
+):
     """Parse comparison settings and launch isolated runs sequentially."""
     from .comparison import run_comparison
 
     parser = argparse.ArgumentParser(
         description=(
-            "Compare single-agent PPO decisions every 5, 10, and 20 seconds"
+            "Compare current, nearest-edge, ray-cast, and combined polygon observations"
+            if geometry
+            else "Compare single-agent PPO decisions every 5, 10, and 20 seconds"
             if frequency
             else "Compare geometry encodings and predictive conflict observations"
             if observation
@@ -498,7 +548,9 @@ def run_comparison_cli(argv=None, *, observation=False, frequency=False):
     parser.add_argument("--speed-max", type=float, default=500)
     parser.add_argument("--device", default="auto")
     default_output = Path("experiments/results") / (
-        "decision_interval_comparison"
+        "geometry_comparison"
+        if geometry
+        else "decision_interval_comparison"
         if frequency
         else "observation_comparison"
         if observation
@@ -534,7 +586,16 @@ def run_comparison_cli(argv=None, *, observation=False, frequency=False):
             default=list(DEFAULT_OBSERVATION_ENCODINGS),
             help="observation variants to compare; the first is the paired baseline",
         )
-    if observation or frequency:
+    if geometry:
+        from .observations import OBSERVATION_ENCODINGS
+
+        parser.add_argument(
+            "--observation-encoding", choices=OBSERVATION_ENCODINGS, default="upstream"
+        )
+        parser.add_argument("--geometry-ray-count", type=positive_int, default=24)
+        parser.add_argument("--geometry-ray-range-m", type=float, default=100_000)
+        parser.add_argument("--decision-interval", type=positive_int, default=10)
+    if observation or frequency or geometry:
         parser.add_argument(
             "--heading-action", choices=["relative", "absolute"], default="relative"
         )
@@ -560,7 +621,7 @@ def run_comparison_cli(argv=None, *, observation=False, frequency=False):
         if frequency:
             run_comparison(args, frequency=True)
         else:
-            run_comparison(args, observation=observation)
+            run_comparison(args, observation=observation, geometry=geometry)
     except ValueError as error:
         parser.error(str(error))
 
@@ -735,9 +796,21 @@ def run_dual_encoder_comparison_cli(argv=None):
     )
 
 
+def run_attention_geometry_comparison_cli(argv=None):
+    """Compare nearest edges with the saved best PPO default-geometry result."""
+    from .attention_geometry_comparison import run_attention_geometry_comparison
+
+    _run_reference_comparison_cli(
+        argv,
+        run_attention_geometry_comparison,
+        "attention_geometry_comparison",
+        "attention_comparison",
+    )
+
+
 def _run_reference_comparison_cli(argv, runner, name, reference):
     parser = argparse.ArgumentParser(
-        description="Train one new architecture and reuse completed reference variants"
+        description="Train one new variant and reuse completed reference results"
     )
     parser.add_argument(
         "--reference-dir",
@@ -754,7 +827,7 @@ def _run_reference_comparison_cli(argv, runner, name, reference):
     parser.add_argument(
         "--retry-failed",
         action="store_true",
-        help="with --resume, retry only the new architecture in a fresh attempt directory",
+        help="with --resume, retry only the new variant in a fresh attempt directory",
     )
     parser.add_argument(
         "--timeout", type=float, help="optional wall-clock seconds per new run"
@@ -875,6 +948,86 @@ def run_multi_agent_comparison_cli(argv=None):
             run_multi_agent_worker(args)
             return
         status = run_multi_agent_comparison(args)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    if status:
+        raise SystemExit(status)
+
+
+def parse_sac_comparison_args(argv=None):
+    """Parse additive-attention SAC family comparisons in joint-step units."""
+    parser = argparse.ArgumentParser(
+        description="Compare additive-attention shared SAC, ISAC, and MASAC"
+    )
+    parser.add_argument("--joint-steps", type=positive_int, default=100_352)
+    parser.add_argument("--batch-size", type=positive_int, default=64)
+    parser.add_argument("--buffer-size", type=positive_int, default=30_000)
+    parser.add_argument(
+        "--learning-starts",
+        type=int,
+        default=2_000,
+        help="random-action warmup in joint decisions",
+    )
+    parser.add_argument("--train-freq", type=positive_int, default=8)
+    parser.add_argument("--gradient-steps", type=positive_int, default=32)
+    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--initial-alpha", type=float, default=0.1)
+    parser.add_argument(
+        "--hidden-sizes", type=positive_int, nargs="+", default=[256, 256]
+    )
+    parser.add_argument(
+        "--attention-context", choices=["all", "ownship_goal"], default="all"
+    )
+    parser.add_argument("--seeds", type=int, nargs="+", default=[42])
+    parser.add_argument(
+        "--eval-seeds", type=int, nargs="+", default=list(range(2026, 2036))
+    )
+    parser.add_argument("--jobs", type=positive_int, default=3)
+    parser.add_argument("--threads-per-job", type=positive_int, default=1)
+    parser.add_argument("--devices", nargs="+", default=["cpu"])
+    parser.add_argument("--timeout", type=float)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("experiments/results/multi_agent_sac_comparison"),
+    )
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--retry-failed", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--worker", choices=JOINT_SAC_ALGORITHMS, help=argparse.SUPPRESS
+    )
+    args = parser.parse_args(argv)
+    args.output_dir = args.output_dir.resolve()
+    if args.worker and (
+        len(args.seeds) != 1
+        or len(args.devices) != 1
+        or args.resume
+        or args.retry_failed
+        or args.dry_run
+    ):
+        parser.error(
+            "workers require one training seed and device, without scheduling flags"
+        )
+    return args
+
+
+def run_sac_comparison_cli(argv=None):
+    """Dispatch an isolated SAC worker or the resumable comparison scheduler."""
+    from .multi_agent_sac_comparison import (
+        run_sac_comparison,
+        run_sac_comparison_worker,
+        sac_comparison_plan,
+    )
+
+    args = parse_sac_comparison_args(argv)
+    try:
+        sac_comparison_plan(args)
+        if args.worker:
+            run_sac_comparison_worker(args)
+            return
+        status = run_sac_comparison(args)
     except ValueError as error:
         raise SystemExit(str(error)) from error
     if status:

@@ -58,11 +58,13 @@
 - [ ] Add entity pooling, Transformer, and GCN/GAT centralized critics
 - [ ] Configure MAPPO actor and critic architectures independently
 - [x] Compare MLP shared PPO, IPPO, and MAPPO
-- [ ] Compare additive-attention shared PPO, IPPO, and MAPPO
+- [x] Compare additive-attention shared PPO, IPPO, and MAPPO
 - [ ] Repeat multi-agent PPO comparisons across training seeds
 - [ ] Compare local, global, and pairwise safety rewards
 - [x] Parameter-shared SAC with local critics
-- [ ] Centralized-critic multi-agent SAC
+- [x] Additive-attention ISAC and masked parameter-shared local-critic SAC
+- [x] Centralized-critic multi-agent SAC (MASAC with additive attention)
+- [ ] Compare additive-attention shared SAC, ISAC, and MASAC against PPO-family results
 
 ## 7. Safe and robust RL
 

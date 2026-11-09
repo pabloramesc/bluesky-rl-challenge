@@ -66,6 +66,9 @@ def entity_layout(space):
                 "obstacle_x",
                 "obstacle_y",
                 "obstacle_radius",
+                "obstacle_nearest_x",
+                "obstacle_nearest_y",
+                "obstacle_clearance",
             )
             if key in offsets
         ]
